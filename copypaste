@@ -1,634 +1,711 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Maps - Larva Tracker</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-    crossorigin=""/>
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-    crossorigin=""></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify
+from flask_socketio import SocketIO, emit
+import os
+import json
+import math
+import uuid
+import sqlite3
+import threading
+import datetime
+import time
+from app import hardware
+
+# Initialize Flask app
+app = Flask(__name__)
+app.secret_key = "your-secret-key"  # Required for session
+socketio = SocketIO(app)
+
+# Get the current directory
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Store target location
+target_location = None
+# Store point coordinates
+point_coordinates = {
+    'A': None,
+    'B': None,
+    'C': None,
+    'D': None
+}
+# Store current pattern
+current_pattern = None
+# Store docking station location
+docking_station = None
+# Store schedules
+schedules = {}
+
+# Dummy credentials (in real app, use proper authentication)
+CREDENTIALS = {
+    "admin": "password"
+}
+
+DB_PATH = os.path.join(BASE_DIR, 'schedules.db')
+
+# Initialize database
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS schedules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        point TEXT UNIQUE,
+        day TEXT,
+        time TEXT,
+        pattern TEXT,
+        radius INTEGER,
+        lat REAL,
+        lng REAL,
+        week INTEGER
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS docking_station (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        lat REAL,
+        lng REAL
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS points (
+        point TEXT PRIMARY KEY,
+        lat REAL,
+        lng REAL
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS target_location (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        lat REAL,
+        lng REAL
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS samples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT,
+        point TEXT,
+        lat REAL,
+        lng REAL,
+        ph REAL,
+        ph_voltage REAL,
+        do REAL,
+        do_voltage REAL,
+        turbidity REAL,
+        temp REAL,
+        water_level REAL
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS error_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT,
+        error_type TEXT,
+        message TEXT,
+        component TEXT,
+        severity TEXT,
+        water_level REAL,
+        gps_lat REAL,
+        gps_lng REAL
+    )''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# Routes
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/login', methods=['POST'])
+def login():
+    username = request.form.get('username')
+    password = request.form.get('password')
+
+    if username == "admin" and password == "password":
+        session['user'] = username
+        return redirect(url_for('main'))
+    else:
+        return redirect(url_for('index', error='invalid_credentials'))
+
+@app.route('/main')
+def main():
+    if 'user' not in session:
+        return redirect(url_for('index'))
+    return render_template('main.html')
+
+@app.route('/maps')
+def maps():
+    return render_template('maps.html')
+
+@app.route('/schedules')
+def schedules_page():
+    return render_template('schedules.html')
+
+@app.route('/notifications')
+def notifications():
+    return render_template('notifications.html')
+
+@app.route('/error-logs')
+def error_logs():
+    return render_template('error_logs.html')
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('index'))
+
+@app.route("/read-water")
+def read_water():
+    try:
+        raw, volt = hardware.read_water_level()
+        if raw is None or volt is None:
+            error_msg = "Failed to read water level: No valid data"
+            log_error('WATER_LEVEL_ERROR', error_msg, 'SENSOR', 'ERROR', water_level=None)
+            return f"Error reading water level: No valid data", 500
+            
+        # Log successful reading
+        log_error('WATER_LEVEL_INFO', f"Water level reading: raw={raw}, voltage={volt:.2f}V", 
+                 'SENSOR', 'INFO', water_level=volt)
+        return f"Water level raw: {raw}, Voltage: {volt:.2f} V"
+    except Exception as e:
+        error_msg = f"Error reading water level: {str(e)}"
+        log_error('WATER_LEVEL_ERROR', error_msg, 'SENSOR', 'ERROR', water_level=None)
+        return error_msg, 500
+
+@app.route('/move_rover', methods=['POST'])
+def move_rover():
+    data = request.get_json()
+    lat = data.get('lat')
+    lng = data.get('lng')
     
-    <style>
-        body {
-            margin: 0;
-            padding: 0;
-            font-family: Arial, sans-serif;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            background: white;
-        }
+    try:
+        # Initialize hardware
+        pca = hardware.setup_pca9685(channel=0)
+        
+        # Move forward for 5 seconds
+        hardware.move_forward(pca)
+        time.sleep(5)
+        hardware.stop_motors(pca)
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Rover moved to lat={lat}, lng={lng}',
+            'position': {'lat': lat, 'lng': lng}
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 20px 40px;
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            background: white;
-            z-index: 100;
-        }
+@app.route('/control_motors', methods=['POST'])
+def control_motors():
+    data = request.get_json()
+    action = data.get('action')
 
-        .logo {
-            width: 80px;
-            height: auto;
-            cursor: pointer;
-            animation: logoSway 2s infinite ease-in-out;
-        }
+# New route for setting point coordinates
+@app.route('/set_point', methods=['POST'])
+def set_point():
+    data = request.get_json()
+    point = data['point']
+    lat = data['lat']
+    lng = data['lng']
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO points (point, lat, lng)
+        VALUES (?, ?, ?)
+        ON CONFLICT(point) DO UPDATE SET lat=excluded.lat, lng=excluded.lng
+    ''', (point, lat, lng))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'success', 'point': {'lat': lat, 'lng': lng}})
 
-        .logo:hover {
-            animation: logoWiggle 0.5s infinite;
-        }
+# New route for getting point coordinates
+@app.route('/get_points')
+def get_points():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT point, lat, lng FROM points')
+    rows = c.fetchall()
+    conn.close()
+    # Build dictionary with keys 'A', 'B', 'C', 'D'
+    points = {pt: None for pt in ['A', 'B', 'C', 'D']}
+    for row in rows:
+        points[row[0]] = {'lat': row[1], 'lng': row[2]}
+    return jsonify(points)
 
-        @keyframes logoSway {
-            0% { transform: rotate(-5deg); }
-            50% { transform: rotate(5deg); }
-            100% { transform: rotate(-5deg); }
-        }
+# New route for setting pattern
+@app.route('/set_docking_station', methods=['POST'])
+def set_docking_station():
+    data = request.get_json()
+    lat = data['lat']
+    lng = data['lng']
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO docking_station (id, lat, lng)
+        VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET lat=excluded.lat, lng=excluded.lng
+    ''', (lat, lng))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'success', 'docking_station': {'lat': lat, 'lng': lng}})
 
-        @keyframes logoWiggle {
-            0% { transform: rotate(-8deg); }
-            25% { transform: rotate(8deg); }
-            50% { transform: rotate(-8deg); }
-            75% { transform: rotate(8deg); }
-            100% { transform: rotate(-8deg); }
-        }
+# New route for getting docking station
+@app.route('/get_docking_station')
+def get_docking_station():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT lat, lng FROM docking_station WHERE id=1')
+    row = c.fetchone()
+    conn.close()
+    if row and row[0] is not None and row[1] is not None:
+        return jsonify({'lat': row[0], 'lng': row[1]})
+    else:
+        return jsonify({'status': 'no_docking_station'})
+    
+# New route for getting current pattern
+@app.route('/get_pattern')
+def get_pattern():
+    return jsonify({'pattern': current_pattern})
 
-        .nav-menu {
-            display: flex;
-            gap: 20px;
-            align-items: center;
-        }
+# Function to calculate distance between two GPS points
+def calculate_distance(lat1, lon1, lat2, lon2):
+    R = 6371  # Earth's radius in kilometers
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat/2) * math.sin(dlat/2) + \
+        math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * \
+        math.sin(dlon/2) * math.sin(dlon/2)
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    distance = R * c
+    return distance
 
-        .nav-menu a {
-            text-decoration: none;
-            color: #666;
-            font-size: 18px;
-        }
+@socketio.on('connect')
+def handle_connect():
+    print('Client connected')
 
-        .nav-menu a.active {
-            color: black;
-            font-weight: bold;
-        }
+@socketio.on('disconnect')
+def handle_disconnect():
+    print('Client disconnected')
 
-        .nav-menu span {
-            color: #666;
-        }
+@socketio.on('position_update')
+def handle_position_update(data):
+    try:
+        if data.get('type') == 'position_update':
+            lat = data.get('lat', 0)
+            lng = data.get('lng', 0)
 
-        .content-wrapper {
-            display: flex;
-            height: calc(100vh - 120px); /* header height */
-            margin-top: 120px;
-            min-height: 0;
-        }
-
-        .sidebar {
-            width: 300px;
-            min-width: 220px;
-            max-width: 350px;
-            padding: 20px;
-            background: white;
-            overflow-y: auto;
-        }
-
-        .point-markers {
-            display: flex;
-            flex-direction: column;
-            gap: 15px;
-        }
-
-        .point {
-            display: flex;
-            align-items: center;
-            padding: 10px 20px;
-            border: none;
-            color: black;
-            font-size: 16px;
-            font-weight: bold;
-            cursor: pointer;
-            position: relative;
-            clip-path: polygon(0 0, 85% 0, 100% 50%, 85% 100%, 0 100%);
-            width: 200px;
-        }
-
-        .point-a { background-color: #FF9966; }
-        .point-b { background-color: #66CCFF; }
-        .point-c { background-color: #FF66B2; }
-        .point-d { background-color: #99FF66; }
-
-        .pattern-controls {
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #f8f8f8;
-            border-radius: 5px;
-            border: 1px solid #ddd;
-        }
-
-        .pattern-button {
-            width: 100%;
-            padding: 10px;
-            margin: 5px 0;
-            border: none;
-            border-radius: 5px;
-            background-color: #4CAF50;
-            color: white;
-            font-weight: bold;
-            cursor: pointer;
-            transition: background-color 0.3s;
-        }
-
-        .pattern-button:hover {
-            background-color: #45a049;
-        }
-
-        .pattern-button.active {
-            background-color: #2196F3;
-        }
-
-        .point-info {
-            margin-top: 10px;
-            padding: 10px;
-            background-color: #f0f0f0;
-            border-radius: 5px;
-            font-size: 14px;
-        }
-
-        .circle-info {
-            margin-top: 5px;
-            color: #666;
-        }
-
-        .docking-controls {
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #f8f8f8;
-            border-radius: 5px;
-            border: 1px solid #ddd;
-        }
-
-        .docking-button {
-            padding: 10px;
-            border: none;
-            border-radius: 5px;
-            background-color: #2196F3;
-            color: white;
-            font-weight: bold;
-            cursor: pointer;
-            transition: background-color 0.3s;
-            width: 100%;
-            margin-top: 10px;
-        }
-
-        .docking-button:hover {
-            background-color: #1976D2;
-        }
-
-        .docking-button.returning {
-            background-color: #FF9800;
-        }
-
-        #map {
-            flex: 1 1 auto;
-            height: 100vh;
-            min-height: 0;
-        }
-
-        .gps-info {
-            position: absolute;
-            top: 140px;
-            right: 40px;
-            background: rgba(255,255,255,0.95);
-            border: 1px solid #ccc;
-            border-radius: 8px;
-            padding: 12px 18px;
-            font-size: 16px;
-            z-index: 2000;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        }
-
-        @media (max-width: 900px) {
-            .content-wrapper { flex-direction: column; }
-            .sidebar { width: 100%; max-width: none; }
-            #map { height: 60vh; }
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <img src="{{ url_for('static', filename='images/larva logo.png') }}" alt="Logo" class="logo" onclick="window.location.href='/main'">
-        <nav class="nav-menu">
-            <a href="/main">HOME</a>
-            <span>|</span>
-            <a href="/maps" class="active">MAPS</a>
-            <span>|</span>
-            <a href="/schedules">SCHEDULES</a>
-            <span>|</span>
-            <a href="/notifications">NOTIFICATION</a>
-            <span>|</span>
-            <a href="/error-logs">ERROR LOGS</a>
-        </nav>
-    </div>
-
-    <div class="content-wrapper">
-        <div class="sidebar">
-            <div class="point-markers">
-                <button class="point point-a" onclick="enterPointSettingMode('A')">Point A</button>
-                <button class="point point-b" onclick="enterPointSettingMode('B')">Point B</button>
-                <button class="point point-c" onclick="enterPointSettingMode('C')">Point C</button>
-                <button class="point point-d" onclick="enterPointSettingMode('D')">Point D</button>
-            </div>
-
-            <div class="pattern-controls">
-                <h3>Pattern Selection</h3>
-                <div class="point-info">
-                    <div class="circle-info">Circle Radius: 15 meters</div>
-                    <div id="pattern-status">No pattern selected</div>
-                </div>
-            </div>
-
-            <div class="docking-controls">
-                <h3>Docking Station</h3>
-                <button class="docking-button" id="setDockingBtn">Set Docking Station</button>
-                <button class="docking-button" id="returnDockBtn" style="margin-top:10px;background:#FF9800;">Return to Dock</button>
-                <div id="dockingStatus" style="margin-top:10px;font-weight:bold;">Docking Status: <span id="dockingStatusValue">Unknown</span></div>
-            </div>
-            <div class="custom-point-controls">
-                <button class="docking-button" id="addCustomPointBtn">Add Custom Point</button>
-            </div>
-        </div>
-        <div id="map"></div>
-        <div id="gpsInfo" class="gps-info">No GPS data</div>
-    </div>
-
-    <script src="{{ url_for('static', filename='js/map.js') }}"></script>
-
-    <script>
-        let currentPoint = null;
-        let mapInstance = null;
-        let robotMarker = null;
-        let scheduleMarkers = [];
-        let scheduleCircles = [];
-        let setDockingMode = false;
-        let allMarkers = [];
-        let pointMarkers = {};
-        let addCustomPointMode = false;
-        let customMarkers = [];
-        let pointSettingMode = false;
-        let pointToSet = null;
-        let pointSettingMessage = null;
-        let cancelPointBtn = null;
-
-        // Point colors for consistency
-        const pointColors = {
-            'A': '#FF9966',
-            'B': '#66CCFF',
-            'C': '#FF66B2',
-            'D': '#99FF66'
-        };
-
-        // Pampanga bounds
-        const pampangaBounds = L.latLngBounds(
-            L.latLng(14.80, 120.35), // Southwest
-            L.latLng(15.25, 120.95)  // Northeast
-        );
-
-        // Map layers (add your local tile server URLs when ready)
-        const streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19,
-            attribution: '© OpenStreetMap contributors'
-        });
-        const satelliteLayer = L.tileLayer('https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
-            maxZoom: 19,
-            subdomains:['mt0','mt1','mt2','mt3'],
-            attribution: '© Google'
-        });
-        // Add more layers as needed
-
-        // Initialize map
-        const map = L.map('map', {
-            center: [15.0409, 120.6668], // Pampanga center
-            zoom: 11,
-            maxBounds: pampangaBounds,
-            layers: [streetLayer]
-        });
-        L.control.layers({
-            'Street': streetLayer,
-            'Satellite': satelliteLayer
-        }).addTo(map);
-
-        function enterPointSettingMode(point) {
-            pointSettingMode = true;
-            pointToSet = point;
-            map.getContainer().style.cursor = 'crosshair';
-            map.dragging.disable();
-            map.scrollWheelZoom.disable();
-            // Show on-screen message
-            if (!pointSettingMessage) {
-                pointSettingMessage = document.createElement('div');
-                pointSettingMessage.id = 'pointSettingMessage';
-                pointSettingMessage.style.position = 'fixed';
-                pointSettingMessage.style.top = '80px';
-                pointSettingMessage.style.left = '50%';
-                pointSettingMessage.style.transform = 'translateX(-50%)';
-                pointSettingMessage.style.background = '#2196F3';
-                pointSettingMessage.style.color = 'white';
-                pointSettingMessage.style.padding = '12px 32px';
-                pointSettingMessage.style.borderRadius = '8px';
-                pointSettingMessage.style.fontSize = '18px';
-                pointSettingMessage.style.zIndex = 2000;
-                document.body.appendChild(pointSettingMessage);
-            }
-            pointSettingMessage.textContent = `Click on the map to set Point ${point}`;
-            pointSettingMessage.style.display = 'block';
-            // Add Cancel button
-            if (!cancelPointBtn) {
-                cancelPointBtn = document.createElement('button');
-                cancelPointBtn.textContent = 'Cancel';
-                cancelPointBtn.style.marginLeft = '16px';
-                cancelPointBtn.style.background = '#f44336';
-                cancelPointBtn.style.color = 'white';
-                cancelPointBtn.style.border = 'none';
-                cancelPointBtn.style.padding = '8px 20px';
-                cancelPointBtn.style.borderRadius = '6px';
-                cancelPointBtn.style.fontSize = '16px';
-                cancelPointBtn.style.cursor = 'pointer';
-                cancelPointBtn.onclick = exitPointSettingMode;
-                pointSettingMessage.appendChild(cancelPointBtn);
-            } else {
-                pointSettingMessage.appendChild(cancelPointBtn);
-            }
-        }
-
-        function exitPointSettingMode() {
-            pointSettingMode = false;
-            pointToSet = null;
-            map.getContainer().style.cursor = '';
-            map.dragging.enable();
-            map.scrollWheelZoom.enable();
-            if (pointSettingMessage) pointSettingMessage.style.display = 'none';
-        }
-
-        // Update point button click handlers to use new mode
-        // Example: document.querySelector('.point-a').onclick = () => enterPointSettingMode('A');
-        document.querySelectorAll('.point').forEach(btn => {
-            btn.onclick = function() {
-                const point = btn.textContent.trim().split(' ')[1];
-                enterPointSettingMode(point);
-            };
-        });
-
-        // Handle map clicks
-        document.getElementById('setDockingBtn').onclick = function() {
-            setDockingMode = true;
-            map.getContainer().style.cursor = 'crosshair';
-        };
-        map.on('click', function(e) {
-            if (setDockingMode) {
-                mapInstance.setDockingStation(e.latlng);
-                setDockingMode = false;
-                map.getContainer().style.cursor = '';
-            } else if (pointSettingMode && pointToSet) {
-                handlePointSelection(pointToSet, e.latlng);
-                exitPointSettingMode();
-            } else if (addCustomPointMode) {
-                const note = prompt('Enter a note for this point:');
-                if (note !== null) {
-                    const marker = L.marker(e.latlng, { draggable: true }).addTo(map);
-                    marker.bindPopup(`<b>Custom Point</b><br>${note}`);
-                    customMarkers.push(marker);
-                    marker.on('contextmenu', function(ev) {
-                        showMarkerContextMenu(marker, ev.latlng, true);
-                    });
-                }
-                addCustomPointMode = false;
-                document.getElementById('addCustomPointBtn').textContent = 'Add Custom Point';
-                map.getContainer().style.cursor = '';
-            } else {
-                // If not in docking mode and not selecting a point, send move command
-                fetch('/move_rover', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ lat: e.latlng.lat, lng: e.latlng.lng })
-                }).then(res => res.json()).then(data => {
-                    alert('Rover moving to: ' + data.lat + ', ' + data.lng);
-                });
-            }
-        });
-
-        // Simulate status updates (for testing)
-        let batteryLevel = 100;
-        let waterLevel = 100;
-
-        // On initial load, show 'No GPS data'
-        document.getElementById('gpsInfo').textContent = 'No GPS data';
-
-        // Function to clear all schedule markers/circles
-        function clearScheduleMarkers() {
-            scheduleMarkers.forEach(m => map.removeLayer(m));
-            scheduleMarkers = [];
-            scheduleCircles.forEach(c => map.removeLayer(c));
-            scheduleCircles = [];
-        }
-
-        // When adding markers for A/B/C/D, store them in pointMarkers
-        function addPointMarker(point, lat, lng) {
-            const color = pointColors[point] || '#2196F3';
-            const marker = L.marker([lat, lng], {title: `Point ${point}`}).addTo(map);
-            marker.bindPopup(`<b>Point ${point}</b>`);
-            pointMarkers[point] = marker;
-            allMarkers.push(marker);
-            marker.on('contextmenu', function(ev) {
-                showMarkerContextMenu(marker, ev.latlng);
-            });
-        }
-
-        let gpsMarker = null;
-
-        function updateGPSOnMap() {
-            fetch('/api/gps')
-                .then(res => res.json())
-                .then(gps => {
-                    if (gps && gps.lat && gps.lng) {
-                        if (!gpsMarker) {
-                            gpsMarker = L.marker([gps.lat, gps.lng]).addTo(map);
-                        } else {
-                            gpsMarker.setLatLng([gps.lat, gps.lng]);
-                        }
-                        map.setView([gps.lat, gps.lng]);
-                        document.getElementById('gpsInfo').textContent =
-                            `Current Location: ${gps.lat.toFixed(6)}, ${gps.lng.toFixed(6)}`;
-                    } else {
-                        document.getElementById('gpsInfo').textContent = 'No GPS data';
-                    }
+            # Check if within Philippines bounds
+            if 4.6431 <= lat <= 21.1205 and 116.9549 <= lng <= 126.5995:
+                emit('position', {
+                    'type': 'position',
+                    'lat': lat,
+                    'lng': lng
                 })
-                .catch(() => {
-                    document.getElementById('gpsInfo').textContent = 'Error fetching GPS data';
-                });
-        }
-        setInterval(updateGPSOnMap, 1000);
-        updateGPSOnMap();
 
-        // Double-click to zoom to marker
-        document.querySelectorAll('.point').forEach(btn => {
-            btn.addEventListener('dblclick', function() {
-                const point = btn.textContent.trim().split(' ')[1];
-                if (pointMarkers[point]) {
-                    map.setView(pointMarkers[point].getLatLng(), 17, {animate: true});
-                    pointMarkers[point].openPopup();
-                }
-            });
-        });
+                # If we have a target, calculate distance and direction
+                if target_location:
+                    distance = calculate_distance(lat, lng, target_location['lat'], target_location['lng'])
+                    emit('target_info', {
+                        'type': 'target_info',
+                        'distance': distance,
+                        'target': target_location
+                    })
 
-        function showDockingStation() {
-            fetch('/get_docking_station')
-                .then(res => res.json())
-                .then(data => {
-                    console.log('Docking station data:', data);
-                    if (data.lat && data.lng) {
-                        const houseIcon = L.icon({
-                            iconUrl: '/static/images/house.png',
-                            iconSize: [36, 36],
-                            iconAnchor: [18, 36],
-                            popupAnchor: [0, -36]
-                        });
-                        const marker = L.marker([data.lat, data.lng], { icon: houseIcon })
-                            .addTo(map)
-                            .bindPopup('Docking Station');
-                        allMarkers.push(marker);
-                    } else {
-                        console.log('No docking station set.');
-                    }
+                    # If we're close to target (within 1 meter)
+                    if distance < 0.001:
+                        # If we're returning to dock and we've reached it
+                        if docking_station and target_location['lat'] == docking_station['lat'] and target_location['lng'] == docking_station['lng']:
+                            emit('docking_status', {
+                                'type': 'docking_status',
+                                'status': 'docked'
+                            })
+                        # If we're following a pattern
+                        elif current_pattern:
+                            emit('pattern_progress', {
+                                'type': 'pattern_progress',
+                                'pattern': current_pattern,
+                                'reached_target': True
+                            })
+
+                # Check if we're in any point's range
+                for point, coords in point_coordinates.items():
+                    if coords:
+                        distance = calculate_distance(lat, lng, coords['lat'], coords['lng'])
+                        if distance <= 0.015:  # Within 15 meters
+                            emit('point_range', {
+                                'type': 'point_range',
+                                'point': point,
+                                'in_range': True,
+                                'distance': distance
+                            })
+            else:
+                emit('error', {
+                    'type': 'error',
+                    'message': 'Position outside Philippines bounds'
                 })
-                .catch(err => console.error('Error fetching docking station:', err));
-        }
+    except json.JSONDecodeError:
+        emit('error', {
+            'type': 'error',
+            'message': 'Invalid JSON data'
+        })
+    except Exception as e:
+        print(f"WebSocket error: {e}")
 
-        function showAllScheduledPointsAndFit() {
-            clearScheduleMarkers();
-            allMarkers = [];
-            fetch('/get_schedules')
-                .then(res => res.json())
-                .then(schedules => {
-                    console.log('Schedules data:', schedules);
-                    schedules.forEach(sch => {
-                        if (sch.location && sch.point) {
-                            addPointMarker(sch.point, sch.location.lat, sch.location.lng);
-                            // Circle
-                            if (sch.radius) {
-                                const circle = L.circle([sch.location.lat, sch.location.lng], {
-                                    radius: Math.min(sch.radius, 20),
-                                    color: pointColors[sch.point] || '#2196F3',
-                                    fillColor: pointColors[sch.point] || '#2196F3',
-                                    fillOpacity: 0.15,
-                                    weight: 2
-                                }).addTo(map);
-                                scheduleCircles.push(circle);
-                            }
-                        }
-                    });
-                    // After all markers are added, fit map to bounds
-                    if (allMarkers.length > 0) {
-                        const group = L.featureGroup(allMarkers);
-                        map.fitBounds(group.getBounds().pad(0.2));
-                    } else {
-                        console.log('No scheduled points to show.');
-                    }
-                })
-                .catch(err => console.error('Error fetching schedules:', err));
-            showDockingStation();
-        }
+@app.route('/save_schedule', methods=['POST'])
+def save_schedule():
+    data = request.get_json()
+    print('Received schedule data:', data)  # Debug print
 
-        // Replace showAllScheduledPoints with the new function
-        showAllScheduledPointsAndFit();
+    required_fields = ['week', 'point', 'day', 'time', 'pattern', 'radius', 'location']
+    missing = [field for field in required_fields if field not in data]
+    if missing:
+        print('Missing fields:', missing)
+        return jsonify({'success': False, 'error': f'Missing fields: {missing}'}), 400
 
-        document.getElementById('addCustomPointBtn').onclick = function() {
-            addCustomPointMode = !addCustomPointMode;
-            this.textContent = addCustomPointMode ? 'Cancel Add Point' : 'Add Custom Point';
-            if (addCustomPointMode) {
-                map.getContainer().style.cursor = 'crosshair';
-            } else {
-                map.getContainer().style.cursor = '';
+    if not isinstance(data['location'], dict) or 'lat' not in data['location'] or 'lng' not in data['location']:
+        print('Invalid location:', data.get('location'))
+        return jsonify({'success': False, 'error': 'Invalid location'}), 400
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        # Upsert: replace if point exists
+        c.execute('''INSERT INTO schedules (point, day, time, pattern, radius, lat, lng, week)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT(point) DO UPDATE SET
+                        day=excluded.day, time=excluded.time, pattern=excluded.pattern,
+                        radius=excluded.radius, lat=excluded.lat, lng=excluded.lng, week=excluded.week''',
+                  (data['point'], data['day'], data['time'], data['pattern'], data['radius'],
+                   data['location']['lat'], data['location']['lng'], data['week']))
+        conn.commit()
+        conn.close()
+        print('Schedule saved successfully')
+        return jsonify({'success': True})
+    except Exception as e:
+        print('Error saving schedule:', e)
+        return jsonify({'success': False, 'error': str(e)}), 400
+
+@app.route('/get_schedules')
+def get_schedules():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT point, day, time, pattern, radius, lat, lng, week FROM schedules')
+    rows = c.fetchall()
+    conn.close()
+    schedules = []
+    for row in rows:
+        schedules.append({
+            'point': row[0],
+            'day': row[1],
+            'time': row[2],
+            'pattern': row[3],
+            'radius': row[4],
+            'location': {'lat': row[5], 'lng': row[6]},
+            'week': row[7]
+        })
+    return jsonify(schedules)
+
+# --- Background Scheduler Thread ---
+def scheduler_thread():
+    while True:
+        now = datetime.datetime.now()
+        weekday = now.strftime('%A')
+        current_time = now.strftime('%H:%M')
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT point, lat, lng FROM schedules WHERE day=? AND time=?', (weekday, current_time))
+        due = c.fetchall()
+        conn.close()
+        for point, lat, lng in due:
+            # Simulate navigation, YOLO, arm, and sampling
+            # (Replace with real navigation and YOLO logic as needed)
+            print(f"[SCHEDULER] Navigating to {point} at {lat},{lng}")
+            # Move arm to sample position
+            hardware.set_arm_angle(90)
+            time.sleep(2)
+            # Read all sensors
+            ph = hardware.read_ph()
+            do = hardware.read_do()
+            try:
+                turbidity_voltage = hardware.get_latest_turbidity()
+                turbidity = {'voltage': turbidity_voltage}
+            except Exception as e:
+                print(f"[ERROR] Turbidity sensor: {e}")
+                turbidity = {'voltage': None, 'error': str(e)}
+            temp = hardware.read_temp()
+            water_level = hardware.read_water_level()
+            # Log sample
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''INSERT INTO samples (timestamp, point, lat, lng, ph, ph_voltage, do, do_voltage, turbidity, temp, water_level)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
+                now.isoformat(), point, lat, lng,
+                ph['ph'], ph['voltage'],
+                do['do'], do['voltage'],
+                turbidity['voltage'], temp, water_level['voltage']
+            ))
+            conn.commit()
+            conn.close()
+            print(f"[SCHEDULER] Sample logged for {point}")
+        time.sleep(60)  # Check every minute
+
+# Start scheduler in background
+threading.Thread(target=scheduler_thread, daemon=True).start()
+
+# --- API Endpoints for Live Data and History ---
+@app.route('/api/live_sample')
+def api_live_sample():
+    try:
+        try:
+            ph = hardware.read_ph()
+        except Exception as e:
+            print(f"[ERROR] pH sensor: {e}")
+            ph = {'ph': None, 'voltage': None, 'error': str(e)}
+        try:
+            do = hardware.read_do()
+        except Exception as e:
+            print(f"[ERROR] DO sensor: {e}")
+            do = {'do': None, 'voltage': None, 'error': str(e)}
+        try:
+            turbidity_voltage = hardware.get_latest_turbidity()
+            turbidity = {'voltage': turbidity_voltage}
+        except Exception as e:
+            print(f"[ERROR] Turbidity sensor: {e}")
+            turbidity = {'voltage': None, 'error': str(e)}
+        try:
+            temp = hardware.read_temp()
+        except Exception as e:
+            print(f"[ERROR] Temp sensor: {e}")
+            temp = None
+        try:
+            water_level_raw, water_level_voltage = hardware.read_water_level()
+        except Exception as e:
+            print(f"[ERROR] Water level sensor: {e}")
+            water_level_raw, water_level_voltage = None, None
+
+        if water_level_voltage is None:
+            water_status = "disconnected"
+            detected = None
+        else:
+            water_status = "connected"
+            detected = "Yes" if water_level_voltage > 0.2 else "No"
+
+        return jsonify({
+            'ph': ph,
+            'do': do,
+            'turbidity': turbidity,
+            'temp': temp,
+            'water_level': {
+                'raw': water_level_raw,
+                'voltage': water_level_voltage,
+                'status': water_status,
+                'detected': detected
             }
-        };
+        })
+    except Exception as e:
+        print(f"[API ERROR] /api/live_sample: {e}")
+        return jsonify({'error': str(e)}), 500
 
-        function showMarkerContextMenu(marker, latlng, isCustom = false) {
-            const menu = document.createElement('div');
-            menu.style.position = 'absolute';
-            menu.style.left = event.clientX + 'px';
-            menu.style.top = event.clientY + 'px';
-            menu.style.background = '#fff';
-            menu.style.border = '1px solid #ccc';
-            menu.style.padding = '8px';
-            menu.style.zIndex = 3000;
-            menu.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
-            menu.innerHTML = `<button id="editMarkerBtn">Edit</button> <button id="deleteMarkerBtn">Delete</button>`;
-            document.body.appendChild(menu);
-
-            menu.querySelector('#editMarkerBtn').onclick = function() {
-                const newNote = prompt('Edit note:', marker.getPopup().getContent().replace(/<[^>]+>/g, ''));
-                if (newNote !== null) {
-                    marker.setPopupContent(`<b>${isCustom ? 'Custom Point' : 'Point'}</b><br>${newNote}`);
-                }
-                document.body.removeChild(menu);
-            };
-            menu.querySelector('#deleteMarkerBtn').onclick = function() {
-                map.removeLayer(marker);
-                document.body.removeChild(menu);
-            };
-            document.addEventListener('click', function handler() {
-                if (document.body.contains(menu)) document.body.removeChild(menu);
-                document.removeEventListener('click', handler);
-            });
+@app.route('/api/sample_history')
+def api_sample_history():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT timestamp, point, lat, lng, ph, do, turbidity, temp, water_level FROM samples ORDER BY timestamp DESC LIMIT 100')
+    rows = c.fetchall()
+    conn.close()
+    history = [
+        {
+            'timestamp': row[0],
+            'point': row[1],
+            'lat': row[2],
+            'lng': row[3],
+            'ph': row[4],
+            'do': row[5],
+            'turbidity': row[6],
+            'temp': row[7],
+            'water_level': row[8]
         }
+        for row in rows
+    ]
+    return jsonify(history)
 
-        // Mission status colors
-        const statusColors = {
-            'visited': '#4CAF50',      // green
-            'in_progress': '#FFEB3B', // yellow
-            'pending': '#F44336'      // red
-        };
-        let missionStatus = {};
+# --- API: GPS Data ---
+@app.route('/api/gps')
+def api_gps():
+    gps = hardware.get_latest_gps()
+    # Store in DB if valid
+    if gps['lat'] is not None and gps['lng'] is not None:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS gps_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            lat REAL,
+            lng REAL,
+            raw TEXT,
+            date TEXT,
+            time TEXT
+        )''')
+        conn.commit()
+        # Use date/time from GPS if available, else try to parse NMEA
+        date_str = gps.get('date')
+        time_str = gps.get('time')
+        if not date_str or not time_str:
+            if gps.get('raw'):
+                try:
+                    parts = gps['raw'].split(',')
+                    if gps['raw'].startswith('$GPRMC'):
+                        if len(parts) > 9:
+                            time_str = f"{parts[1][:2]}:{parts[1][2:4]}:{parts[1][4:6]}"
+                            date_str = f"{parts[9][4:6]}/{parts[9][2:4]}/{parts[9][:2]}"
+                    elif gps['raw'].startswith('$GPGGA'):
+                        if len(parts) > 1:
+                            time_str = f"{parts[1][:2]}:{parts[1][2:4]}:{parts[1][4:6]}"
+                            now = datetime.datetime.now()
+                            date_str = now.strftime("%m/%d/%Y")
+                except Exception as e:
+                    print(f"Error parsing GPS date/time: {e}")
+        c.execute('INSERT INTO gps_log (timestamp, lat, lng, raw, date, time) VALUES (?, ?, ?, ?, ?, ?)',
+                  (datetime.datetime.now().isoformat(), gps['lat'], gps['lng'], gps['raw'], date_str, time_str))
+        conn.commit()
+        conn.close()
+        gps['date'] = date_str
+        gps['time'] = time_str
+    else:
+        log_error('GPS_ERROR', 'No valid GPS data received', 'GPS', 'WARNING', 
+                 gps_lat=gps.get('lat'), gps_lng=gps.get('lng'))
+    return jsonify(gps)
 
-        // Fetch mission status and update marker colors/status
-        function updateMissionStatus() {
-            fetch('/api/mission_status')
-                .then(res => res.json())
-                .then(status => {
-                    missionStatus = status;
-                    // Update docking status
-                    document.getElementById('dockingStatusValue').textContent =
-                        status.docking ? status.docking.replace('_', ' ').toUpperCase() : 'Unknown';
-                    // Update marker colors
-                    Object.keys(pointMarkers).forEach(pt => {
-                        if (status[pt] && pointMarkers[pt]) {
-                            const icon = L.divIcon({
-                                className: '',
-                                html: `<div style="background:${statusColors[status[pt]]||'#2196F3'};width:24px;height:24px;border-radius:50%;border:2px solid #333;"></div>`,
-                                iconSize: [24,24],
-                                iconAnchor: [12,24]
-                            });
-                            pointMarkers[pt].setIcon(icon);
-                        }
-                    });
-                });
+# --- API: Ultrasonic Sensors ---
+@app.route('/api/ultrasonic')
+def api_ultrasonic():
+    return jsonify(hardware.get_ultrasonic())
+
+# --- API: YOLOv8 Object Detection ---
+@app.route('/api/yolo')
+def api_yolo():
+    # This may take a few seconds to run
+    return jsonify(hardware.run_yolo_inference())
+
+# --- Mission Progress Status API (Demo) ---
+@app.route('/api/mission_status')
+def api_mission_status():
+    # Demo/mock data: in real use, update with actual mission logic
+    # Example: {'A': 'visited', 'B': 'in_progress', 'C': 'pending', 'D': 'pending', 'docking': 'docked'}
+    status = {
+        'A': 'visited',
+        'B': 'in_progress',
+        'C': 'pending',
+        'D': 'pending',
+        'docking': 'docked'  # or 'en_route', 'away'
+    }
+    return jsonify(status)
+
+# Add error logging function
+def log_error(error_type, message, component, severity, water_level=None, gps_lat=None, gps_lng=None):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''INSERT INTO error_logs 
+                    (timestamp, error_type, message, component, severity, water_level, gps_lat, gps_lng)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                 (datetime.datetime.now().isoformat(), error_type, message, component, 
+                  severity, water_level, gps_lat, gps_lng))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error logging failed: {str(e)}")
+
+# Add endpoint to get error logs
+@app.route('/api/error-logs')
+def get_error_logs():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT timestamp, error_type, message, component, severity, water_level, gps_lat, gps_lng FROM error_logs ORDER BY timestamp DESC LIMIT 100')
+    rows = c.fetchall()
+    conn.close()
+    logs = [
+        {
+            'timestamp': row[0],
+            'error_type': row[1],
+            'message': row[2],
+            'component': row[3],
+            'severity': row[4],
+            'water_level': row[5],
+            'gps_lat': row[6],
+            'gps_lng': row[7]
         }
-        setInterval(updateMissionStatus, 2000);
-        updateMissionStatus();
+        for row in rows
+    ]
+    return jsonify(logs)
 
-        // Return to Dock button logic
-        document.getElementById('returnDockBtn').onclick = function() {
-            // TODO: Implement backend endpoint for actual rover command
-            document.getElementById('dockingStatusValue').textContent = 'EN ROUTE';
-            this.disabled = true;
-            setTimeout(() => { this.disabled = false; }, 5000); // Re-enable after 5s for demo
-            // Optionally, send fetch('/api/return_to_dock', {method:'POST'})
-        };
-    </script>
-</body>
-</html> 
+# Add endpoint to clear error logs
+@app.route('/api/error-logs/clear', methods=['POST'])
+def clear_error_logs():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('DELETE FROM error_logs')
+        conn.commit()
+        conn.close()
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/test')
+def test():
+    return render_template('test.html')
+
+# Updated /read-turbidity route to return only the voltage value
+@app.route('/read-turbidity')
+def read_turbidity():
+    try:
+        voltage = hardware.get_latest_turbidity()
+        if voltage is None:
+            return 'No data', 503
+        return f"{voltage:.3f}"
+    except Exception as e:
+        error_msg = f"Error reading turbidity: {str(e)}"
+        log_error('TURBIDITY_ERROR', error_msg, 'SENSOR', 'ERROR')
+        return error_msg, 500
+
+@app.route('/api/yolo_detection')
+def yolo_detection():
+    try:
+        # Run YOLOv8 inference
+        results = hardware.run_yolo_inference()
+        
+        if 'error' in results:
+            return jsonify({'error': results['error']}), 500
+            
+        # Map YOLOv8 class names to our object labels
+        yolo_to_obj = {
+            'plant_pot': 'A',
+            'bamboo_stump': 'B',
+            'tire': 'C',
+            'bamboo_planter': 'D'
+        }
+        
+        # Get the highest confidence detection
+        detected_object = None
+        highest_conf = 0
+        
+        for obj in results['objects']:
+            class_name = obj['class']
+            confidence = obj['confidence']
+            
+            if confidence > highest_conf and class_name in yolo_to_obj:
+                highest_conf = confidence
+                detected_object = yolo_to_obj[class_name]
+        
+        return jsonify({
+            'object': detected_object,
+            'confidence': highest_conf if detected_object else 0
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+if __name__ == '__main__':
+    try:
+        import eventlet
+        import eventlet.wsgi
+        socketio.run(app, host="127.0.0.1", port=5000, debug=True)
+    except Exception as e:
+        print(f"Error running server: {e}")
+    finally:
+        # No need to cleanup here as hardware is initialized per request
+        pass
