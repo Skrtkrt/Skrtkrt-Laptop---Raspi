@@ -5,7 +5,220 @@ import json
 import math
 import uuid
 import sqlite3
-import threading
+import threading<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manual Control - Larva Tracker</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        body {
+            margin: 0;
+            background: #f5f5f5;
+            font-family: Arial, sans-serif;
+        }
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: #fff;
+            padding: 10px 40px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        }
+        .logo {
+            width: 80px;
+            height: auto;
+            cursor: pointer;
+            animation: logoSway 2s infinite ease-in-out;
+        }
+        .logo:hover {
+            animation: logoWiggle 0.5s infinite;
+        }
+        @keyframes logoSway {
+            0% { transform: rotate(-5deg); }
+            50% { transform: rotate(5deg); }
+            100% { transform: rotate(-5deg); }
+        }
+        @keyframes logoWiggle {
+            0% { transform: rotate(-8deg); }
+            25% { transform: rotate(8deg); }
+            50% { transform: rotate(-8deg); }
+            75% { transform: rotate(8deg); }
+            100% { transform: rotate(-8deg); }
+        }
+        .nav-menu {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+        .nav-menu a {
+            text-decoration: none;
+            color: #666;
+            font-size: 18px;
+        }
+        .nav-menu a.active {
+            color: black;
+            font-weight: bold;
+        }
+        .nav-menu span {
+            color: #666;
+        }
+        .dpad-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 60vh;
+            margin-top: 32px;
+        }
+        .dpad-btn {
+            width: 100px;
+            height: 100px;
+            font-size: 3rem;
+            background: #111;
+            color: #fff;
+            border: none;
+            border-radius: 18px;
+            margin: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+        }
+        .dpad-btn:active {
+            background: #007bff;
+            transform: scale(0.97);
+        }
+        .dpad-middle-row {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+        }
+        .dpad-center {
+            width: 100px;
+            height: 100px;
+        }
+        .dpad-diagonal-row {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+        }
+        @media (max-width: 600px) {
+            .dpad-btn, .dpad-center { width: 60px; height: 60px; font-size: 1.5rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <img src="/static/images/larva logo.png" alt="Logo" class="logo" onclick="window.location.href='/maps'">
+        <div class="nav-menu">
+            <a href="/main">HOME</a>
+            <span>|</span>
+            <a href="/maps" class="active">MAPS</a>
+            <span>|</span>
+            <a href="/schedules">SCHEDULES</a>
+            <span>|</span>
+            <a href="/notifications">NOTIFICATIONS</a>
+            <span>|</span>
+            <a href="/error-logs">Error Logs</a>
+        </div>
+    </div>
+    <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:24px;">
+        <label for="pwmSlider" style="font-size:1.1rem; font-weight:500; margin-bottom:8px;">Motor Speed (PWM): <span id="pwmValue">32768</span></label>
+        <input type="range" id="pwmSlider" min="20000" max="65535" value="32768" style="width:300px;">
+    </div>
+    <div class="dpad-container">
+        <div class="dpad-diagonal-row">
+            <button class="dpad-btn" id="northwestBtn">&#8598;</button>
+            <button class="dpad-btn" id="forwardBtn">&#8593;</button>
+            <button class="dpad-btn" id="northeastBtn">&#8599;</button>
+        </div>
+        <div class="dpad-middle-row">
+            <button class="dpad-btn" id="leftBtn">&#8592;</button>
+            <div class="dpad-center"></div>
+            <button class="dpad-btn" id="rightBtn">&#8594;</button>
+        </div>
+        <div class="dpad-diagonal-row">
+            <button class="dpad-btn" id="southwestBtn">&#8601;</button>
+            <button class="dpad-btn" id="backwardBtn">&#8595;</button>
+            <button class="dpad-btn" id="southeastBtn">&#8600;</button>
+        </div>
+    </div>
+    <script>
+        // --- PWM Slider Logic ---
+        const pwmSlider = document.getElementById('pwmSlider');
+        const pwmValue = document.getElementById('pwmValue');
+        pwmSlider.addEventListener('input', () => {
+            pwmValue.textContent = pwmSlider.value;
+        });
+        function getPWM() { return parseInt(pwmSlider.value); }
+
+        // --- Real-Time Button Control ---
+        function sendAction(action, pwm) {
+            fetch('/manual_control', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action, pwm })
+            });
+        }
+        function sendStop() {
+            sendAction('stop', getPWM());
+        }
+        function setupRealtimeButton(btnId, action) {
+            const btn = document.getElementById(btnId);
+            let isPressed = false;
+            // Mouse events
+            btn.addEventListener('mousedown', () => { isPressed = true; sendAction(action, getPWM()); });
+            btn.addEventListener('mouseup', () => { isPressed = false; sendStop(); });
+            btn.addEventListener('mouseleave', () => { if (isPressed) { isPressed = false; sendStop(); } });
+            // Touch events
+            btn.addEventListener('touchstart', (e) => { e.preventDefault(); isPressed = true; sendAction(action, getPWM()); });
+            btn.addEventListener('touchend', () => { isPressed = false; sendStop(); });
+        }
+        setupRealtimeButton('forwardBtn', 'forward');
+        setupRealtimeButton('backwardBtn', 'backward');
+        setupRealtimeButton('leftBtn', 'left');
+        setupRealtimeButton('rightBtn', 'right');
+        setupRealtimeButton('northwestBtn', 'northwest');
+        setupRealtimeButton('northeastBtn', 'northeast');
+        setupRealtimeButton('southwestBtn', 'southwest');
+        setupRealtimeButton('southeastBtn', 'southeast');
+        // --- Keyboard support ---
+        const keyMap = { ArrowUp: 'forward', ArrowDown: 'backward', ArrowLeft: 'left', ArrowRight: 'right',
+            wq: 'northwest', we: 'northeast', sq: 'southwest', se: 'southeast' };
+        let keyDown = {};
+        let combo = '';
+        document.addEventListener('keydown', function(e) {
+            if (e.repeat) return;
+            if (e.key.length === 1) combo += e.key.toLowerCase();
+            if (keyMap[e.key]) {
+                if (!keyDown[e.key]) {
+                    keyDown[e.key] = true;
+                    sendAction(keyMap[e.key], getPWM());
+                }
+            } else if (keyMap[combo]) {
+                if (!keyDown[combo]) {
+                    keyDown[combo] = true;
+                    sendAction(keyMap[combo], getPWM());
+                }
+            }
+            if (e.key === ' ') sendStop();
+        });
+        document.addEventListener('keyup', function(e) {
+            if (keyMap[e.key]) {
+                keyDown[e.key] = false;
+                sendStop();
+            } else if (combo && keyMap[combo]) {
+                keyDown[combo] = false;
+                sendStop();
+                combo = '';
+            }
+        });
+    </script>
+</body>
+</html> 
 import datetime
 import time
 from app import hardware
