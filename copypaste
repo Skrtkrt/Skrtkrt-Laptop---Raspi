@@ -273,10 +273,10 @@ def set_pwm(pca, channel, duty):
     pca.channels[channel].duty_cycle = duty
 
 def move_backward(pca, pwm):
-    set_pwm(pca, 0, pwm)
-    set_pwm(pca, 1, 0)
-    set_pwm(pca, 2, pwm)
-    set_pwm(pca, 3, 0)
+    set_pwm(pca, 0, 0)      # Left wheels backward
+    set_pwm(pca, 1, pwm)
+    set_pwm(pca, 2, 0)      # Right wheels backward
+    set_pwm(pca, 3, pwm)
 
 def move_forward(pca, pwm):
     set_pwm(pca, 0, pwm)
