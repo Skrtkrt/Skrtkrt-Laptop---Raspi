@@ -1,256 +1,89 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Manual Control - Larva Tracker</title>
-    <link rel="stylesheet" href="/static/css/style.css">
-    <style>
-        body {
-            margin: 0;
-            background: #f5f5f5;
-            font-family: Arial, sans-serif;
-        }
-        .header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            background: #fff;
-            padding: 10px 40px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-        }
-        .logo {
-            width: 80px;
-            height: auto;
-            cursor: pointer;
-            animation: logoSway 2s infinite ease-in-out;
-        }
-        .logo:hover {
-            animation: logoWiggle 0.5s infinite;
-        }
-        @keyframes logoSway {
-            0% { transform: rotate(-5deg); }
-            50% { transform: rotate(5deg); }
-            100% { transform: rotate(-5deg); }
-        }
-        @keyframes logoWiggle {
-            0% { transform: rotate(-8deg); }
-            25% { transform: rotate(8deg); }
-            50% { transform: rotate(-8deg); }
-            75% { transform: rotate(8deg); }
-            100% { transform: rotate(-8deg); }
-        }
-        .nav-menu {
-            display: flex;
-            gap: 20px;
-            align-items: center;
-        }
-        .nav-menu a {
-            text-decoration: none;
-            color: #666;
-            font-size: 18px;
-        }
-        .nav-menu a.active {
-            color: black;
-            font-weight: bold;
-        }
-        .nav-menu span {
-            color: #666;
-        }
-        .dpad-container {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 60vh;
-            margin-top: 32px;
-        }
-        .dpad-btn {
-            width: 100px;
-            height: 100px;
-            font-size: 3rem;
-            background: #111;
-            color: #fff;
-            border: none;
-            border-radius: 18px;
-            margin: 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.12);
-            cursor: pointer;
-            transition: background 0.2s, transform 0.1s;
-        }
-        .dpad-btn:active {
-            background: #007bff;
-            transform: scale(0.97);
-        }
-        .dpad-middle-row {
-            display: flex;
-            flex-direction: row;
-            align-items: center;
-            justify-content: center;
-        }
-        .dpad-center {
-            width: 100px;
-            height: 100px;
-        }
-        @media (max-width: 600px) {
-            .dpad-btn, .dpad-center { width: 60px; height: 60px; font-size: 1.5rem; }
-        }
-        .servo-section {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            margin-top: 40px;
-        }
-        .servo-btn-row {
-            display: flex;
-            flex-direction: row;
-            gap: 18px;
-            margin-bottom: 10px;
-        }
-        .servo-btn {
-            background: #222;
-            color: #fff;
-            border: none;
-            border-radius: 10px;
-            font-size: 1.1rem;
-            font-weight: 500;
-            padding: 18px 28px;
-            cursor: pointer;
-            transition: background 0.2s, transform 0.1s;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.10);
-        }
-        .servo-btn:active {
-            background: #007bff;
-            transform: scale(0.97);
-        }
-        @media (max-width: 600px) {
-            .servo-btn { font-size: 0.9rem; padding: 10px 12px; }
-            .servo-btn-row { gap: 8px; }
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <img src="/static/images/larva logo.png" alt="Logo" class="logo" onclick="window.location.href='/maps'">
-        <div class="nav-menu">
-            <a href="/main">HOME</a>
-            <span>|</span>
-            <a href="/maps" class="active">MAPS</a>
-            <span>|</span>
-            <a href="/schedules">SCHEDULES</a>
-            <span>|</span>
-            <a href="/notifications">NOTIFICATIONS</a>
-            <span>|</span>
-            <a href="/error-logs">Error Logs</a>
-        </div>
-    </div>
-    <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:24px;">
-        <label for="pwmSlider" style="font-size:1.1rem; font-weight:500; margin-bottom:8px;">Motor Speed (PWM): <span id="pwmValue">32768</span></label>
-        <input type="range" id="pwmSlider" min="20000" max="65535" value="32768" style="width:300px;">
-    </div>
-    <div class="dpad-container">
-        <button class="dpad-btn" id="forwardBtn">&#8593;</button>
-        <div class="dpad-middle-row">
-            <button class="dpad-btn" id="leftBtn">&#8592;</button>
-            <div class="dpad-center"></div>
-            <button class="dpad-btn" id="rightBtn">&#8594;</button>
-        </div>
-        <button class="dpad-btn" id="backwardBtn">&#8595;</button>
-    </div>
-    <div class="servo-section" style="display:flex; flex-direction:column; align-items:center; margin-top:40px;">
-        <div style="font-size:1.2rem; font-weight:600; margin-bottom:12px;">Servo Arm Control</div>
-        <div class="servo-btn-row">
-            <button class="servo-btn" onclick="moveServo('A')">Plant Pots (A)</button>
-            <button class="servo-btn" onclick="moveServo('B')">Bamboo Stump (B)</button>
-            <button class="servo-btn" onclick="moveServo('C')">Tires (C)</button>
-            <button class="servo-btn" onclick="moveServo('D')">Bamboo Planter (D)</button>
-        </div>
-        <div class="servo-btn-row">
-            <button class="servo-btn" onclick="straightenServo()">Straighten</button>
-            <button class="servo-btn" onclick="restServo()">Rest</button>
-        </div>
-        <div id="servoStatus" style="margin-top:16px; font-size:1rem; color:#007bff;"></div>
-    </div>
-    <script>
-        // --- PWM Slider Logic ---
-        const pwmSlider = document.getElementById('pwmSlider');
-        const pwmValue = document.getElementById('pwmValue');
-        pwmSlider.addEventListener('input', () => {
-            pwmValue.textContent = pwmSlider.value;
-        });
-        function getPWM() { return parseInt(pwmSlider.value); }
+import time
+import busio
+from board import SCL, SDA
+from adafruit_pca9685 import PCA9685
+from adafruit_tca9548a import TCA9548A
+import threading
 
-        // --- Real-Time Button Control ---
-        function sendAction(action, pwm) {
-            fetch('/manual_control', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action, pwm })
-            });
-        }
-        function sendStop() {
-            sendAction('stop', getPWM());
-        }
-        function setupRealtimeButton(btnId, action) {
-            const btn = document.getElementById(btnId);
-            let isPressed = false;
-            // Mouse events
-            btn.addEventListener('mousedown', () => { isPressed = true; sendAction(action, getPWM()); });
-            btn.addEventListener('mouseup', () => { isPressed = false; sendStop(); });
-            btn.addEventListener('mouseleave', () => { if (isPressed) { isPressed = false; sendStop(); } });
-            // Touch events
-            btn.addEventListener('touchstart', (e) => { e.preventDefault(); isPressed = true; sendAction(action, getPWM()); });
-            btn.addEventListener('touchend', () => { isPressed = false; sendStop(); });
-        }
-        setupRealtimeButton('forwardBtn', 'forward');
-        setupRealtimeButton('backwardBtn', 'backward');
-        setupRealtimeButton('leftBtn', 'left');
-        setupRealtimeButton('rightBtn', 'right');
-        // --- Keyboard support ---
-        const keyMap = { ArrowUp: 'forward', ArrowDown: 'backward', ArrowLeft: 'left', ArrowRight: 'right' };
-        let keyDown = {};
-        document.addEventListener('keydown', function(e) {
-            if (e.repeat) return;
-            if (keyMap[e.key] && !keyDown[e.key]) {
-                keyDown[e.key] = true;
-                sendAction(keyMap[e.key], getPWM());
-            }
-            if (e.key === ' ') sendStop();
-        });
-        document.addEventListener('keyup', function(e) {
-            if (keyMap[e.key]) {
-                keyDown[e.key] = false;
-                sendStop();
-            }
-        });
-        function moveServo(obj) {
-            fetch('/servo/move', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ object: obj })
-            })
-            .then(res => res.json())
-            .then(data => {
-                document.getElementById('servoStatus').textContent = data.status === 'success' ? `Moved to ${obj}` : `Error: ${data.message}`;
-            })
-            .catch(() => { document.getElementById('servoStatus').textContent = 'Error sending command.'; });
-        }
-        function straightenServo() {
-            fetch('/servo/straight', { method: 'POST' })
-            .then(res => res.json())
-            .then(data => {
-                document.getElementById('servoStatus').textContent = data.status === 'success' ? 'Arm straightened' : `Error: ${data.message}`;
-            })
-            .catch(() => { document.getElementById('servoStatus').textContent = 'Error sending command.'; });
-        }
-        function restServo() {
-            fetch('/servo/rest', { method: 'POST' })
-            .then(res => res.json())
-            .then(data => {
-                document.getElementById('servoStatus').textContent = data.status === 'success' ? 'Arm at rest' : `Error: ${data.message}`;
-            })
-            .catch(() => { document.getElementById('servoStatus').textContent = 'Error sending command.'; });
-        }
-    </script>
-</body>
-</html> 
+# Setup I2C and TCA9548A multiplexer
+_i2c = busio.I2C(SCL, SDA)
+_tca = TCA9548A(_i2c)
+_pca_i2c = _tca[0]  # PCA9685 on channel 0
+_pca = PCA9685(_pca_i2c)
+_pca.frequency = 50  # Standard for servos
+
+# Servo configuration
+servo_config = {
+    9: {"min": 90, "max": 180, "init": 180, "delay": 0.04},
+    10: {"min": 0, "max": 100, "init": 90, "delay": 0.08}
+}
+
+# Current positions
+current_angles = {
+    9: servo_config[9]["init"],
+    10: servo_config[10]["init"]
+}
+
+# Object positions
+object_positions = {
+    "A": {9: 120, 10: 30},
+    "B": {9: 100, 10: 75},
+    "C": {9: 120, 10: 30},
+    "D": {9: 100, 10: 75}
+}
+
+# Straight position
+straight_position = {
+    9: 90,
+    10: 0
+}
+
+# Lock for thread safety
+_servo_lock = threading.Lock()
+
+# Convert angle to PWM signal
+def angle_to_pwm(angle):
+    pulse = 500 + (angle / 180) * 2000  # in microseconds
+    duty_cycle = int((pulse / 20000) * 65535)
+    return duty_cycle
+
+# Move servo slowly
+def smooth_move(channel, current, target, delay):
+    step = 1 if target > current else -1
+    for angle in range(current, target + step, step):
+        _pca.channels[channel].duty_cycle = angle_to_pwm(angle)
+        time.sleep(delay)
+    return target
+
+# Threaded move
+def threaded_servo_move(channel, target_angle, delay):
+    global current_angles
+    with _servo_lock:
+        current = current_angles[channel]
+        current_angles[channel] = smooth_move(channel, current, target_angle, delay)
+
+def move_both_channels(targets):
+    threads = []
+    for ch in targets:
+        thread = threading.Thread(target=threaded_servo_move, args=(ch, targets[ch], servo_config[ch]["delay"]))
+        threads.append(thread)
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+def initialize_servos():
+    move_both_channels({9: servo_config[9]["init"], 10: servo_config[10]["init"]})
+
+def move_to_object(obj_label):
+    if obj_label not in object_positions:
+        raise ValueError(f"Invalid object label: {obj_label}")
+    # Move to straight position first
+    move_both_channels(straight_position)
+    # Move to object position
+    move_both_channels(object_positions[obj_label])
+
+def move_to_straight():
+    move_both_channels(straight_position)
+
+def move_to_rest():
+    move_both_channels({9: servo_config[9]["init"], 10: servo_config[10]["init"]}) 
