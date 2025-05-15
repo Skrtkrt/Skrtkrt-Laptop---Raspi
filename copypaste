@@ -1,356 +1,182 @@
 <!DOCTYPE html>
-
 <html lang="en">
-
 <head>
-
     <meta charset="UTF-8">
-
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
     <title>Manual Control - Larva Tracker</title>
-
     <link rel="stylesheet" href="/static/css/style.css">
-
     <style>
-
         body {
-
             margin: 0;
-
             background: #f5f5f5;
-
             font-family: Arial, sans-serif;
-
         }
-
         .header {
-
             display: flex;
-
             align-items: center;
-
             justify-content: space-between;
-
             background: #fff;
-
             padding: 10px 40px;
-
             box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-
         }
-
         .logo {
-
             width: 80px;
-
             height: auto;
-
             cursor: pointer;
-
             animation: logoSway 2s infinite ease-in-out;
-
         }
-
         .logo:hover {
-
             animation: logoWiggle 0.5s infinite;
-
         }
-
         @keyframes logoSway {
-
             0% { transform: rotate(-5deg); }
-
             50% { transform: rotate(5deg); }
-
             100% { transform: rotate(-5deg); }
-
         }
-
         @keyframes logoWiggle {
-
             0% { transform: rotate(-8deg); }
-
             25% { transform: rotate(8deg); }
-
             50% { transform: rotate(-8deg); }
-
             75% { transform: rotate(8deg); }
-
             100% { transform: rotate(-8deg); }
-
         }
-
         .nav-menu {
-
             display: flex;
-
             gap: 20px;
-
             align-items: center;
-
         }
-
         .nav-menu a {
-
             text-decoration: none;
-
             color: #666;
-
             font-size: 18px;
-
         }
-
         .nav-menu a.active {
-
             color: black;
-
             font-weight: bold;
-
         }
-
         .nav-menu span {
-
             color: #666;
-
         }
-
-        .controller {
-
+        .dpad-container {
             display: flex;
-
             flex-direction: column;
-
             align-items: center;
-
             justify-content: center;
-
-            min-height: 70vh;
-
+            min-height: 60vh;
+            margin-top: 32px;
         }
-
-        .row {
-
-            display: flex;
-
-            gap: 32px;
-
-        }
-
-        .ctrl-btn {
-
-            background: #007bff;
-
+        .dpad-btn {
+            width: 100px;
+            height: 100px;
+            font-size: 3rem;
+            background: #111;
             color: #fff;
-
             border: none;
-
-            border-radius: 10px;
-
-            font-size: 2rem;
-
-            font-weight: 600;
-
-            padding: 32px 64px;
-
-            margin: 12px 0;
-
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-
+            border-radius: 18px;
+            margin: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.12);
             cursor: pointer;
-
             transition: background 0.2s, transform 0.1s;
-
         }
-
-        .ctrl-btn:active {
-
-            background: #0056b3;
-
+        .dpad-btn:active {
+            background: #007bff;
             transform: scale(0.97);
-
         }
-
+        .dpad-middle-row {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+        }
+        .dpad-center {
+            width: 100px;
+            height: 100px;
+        }
         @media (max-width: 600px) {
-
-            .controller { min-height: 50vh; }
-
-            .ctrl-btn { font-size: 1.2rem; padding: 18px 32px; }
-
-            .row { gap: 12px; }
-
-            .header { padding: 10px 10px; }
-
+            .dpad-btn, .dpad-center { width: 60px; height: 60px; font-size: 1.5rem; }
         }
-
     </style>
-
 </head>
-
 <body>
-
     <div class="header">
-
         <img src="/static/images/larva logo.png" alt="Logo" class="logo" onclick="window.location.href='/maps'">
-
         <div class="nav-menu">
-
             <a href="/main">HOME</a>
-
             <span>|</span>
-
             <a href="/maps" class="active">MAPS</a>
-
             <span>|</span>
-
             <a href="/schedules">SCHEDULES</a>
-
             <span>|</span>
-
             <a href="/notifications">NOTIFICATIONS</a>
-
             <span>|</span>
-
             <a href="/error-logs">Error Logs</a>
-
         </div>
-
     </div>
-
     <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:24px;">
-
         <label for="pwmSlider" style="font-size:1.1rem; font-weight:500; margin-bottom:8px;">Motor Speed (PWM): <span id="pwmValue">32768</span></label>
-
         <input type="range" id="pwmSlider" min="20000" max="65535" value="32768" style="width:300px;">
-
     </div>
-
-    <div class="controller">
-
-        <button class="ctrl-btn" id="forwardBtn">Forward</button>
-
-        <div class="row">
-
-            <button class="ctrl-btn" id="leftBtn">&#8592; Rotate Counter Clockwise</button>
-
-            <button class="ctrl-btn" id="rightBtn">Rotate Clockwise &#8594;</button>
-
+    <div class="dpad-container">
+        <button class="dpad-btn" id="forwardBtn">&#8593;</button>
+        <div class="dpad-middle-row">
+            <button class="dpad-btn" id="leftBtn">&#8592;</button>
+            <div class="dpad-center"></div>
+            <button class="dpad-btn" id="rightBtn">&#8594;</button>
         </div>
-
-        <button class="ctrl-btn" id="backwardBtn">Reverse</button>
-
-        <button class="ctrl-btn" onclick="sendStop()" style="background:#dc3545;">Stop</button>
-
+        <button class="dpad-btn" id="backwardBtn">&#8595;</button>
     </div>
-
     <script>
-
         // --- PWM Slider Logic ---
-
         const pwmSlider = document.getElementById('pwmSlider');
-
         const pwmValue = document.getElementById('pwmValue');
-
         pwmSlider.addEventListener('input', () => {
-
             pwmValue.textContent = pwmSlider.value;
-
         });
-
         function getPWM() { return parseInt(pwmSlider.value); }
 
-
-
         // --- Real-Time Button Control ---
-
         function sendAction(action, pwm) {
-
             fetch('/manual_control', {
-
                 method: 'POST',
-
                 headers: { 'Content-Type': 'application/json' },
-
                 body: JSON.stringify({ action, pwm })
-
             });
-
         }
-
         function sendStop() {
-
             sendAction('stop', getPWM());
-
         }
-
         function setupRealtimeButton(btnId, action) {
-
             const btn = document.getElementById(btnId);
-
             let isPressed = false;
-
             // Mouse events
-
             btn.addEventListener('mousedown', () => { isPressed = true; sendAction(action, getPWM()); });
-
             btn.addEventListener('mouseup', () => { isPressed = false; sendStop(); });
-
             btn.addEventListener('mouseleave', () => { if (isPressed) { isPressed = false; sendStop(); } });
-
             // Touch events
-
             btn.addEventListener('touchstart', (e) => { e.preventDefault(); isPressed = true; sendAction(action, getPWM()); });
-
             btn.addEventListener('touchend', () => { isPressed = false; sendStop(); });
-
         }
-
         setupRealtimeButton('forwardBtn', 'forward');
-
         setupRealtimeButton('backwardBtn', 'backward');
-
         setupRealtimeButton('leftBtn', 'left');
-
         setupRealtimeButton('rightBtn', 'right');
-
         // --- Keyboard support ---
-
         const keyMap = { ArrowUp: 'forward', ArrowDown: 'backward', ArrowLeft: 'left', ArrowRight: 'right' };
-
         let keyDown = {};
-
         document.addEventListener('keydown', function(e) {
-
             if (e.repeat) return;
-
             if (keyMap[e.key] && !keyDown[e.key]) {
-
                 keyDown[e.key] = true;
-
                 sendAction(keyMap[e.key], getPWM());
-
             }
-
             if (e.key === ' ') sendStop();
-
         });
-
         document.addEventListener('keyup', function(e) {
-
             if (keyMap[e.key]) {
-
                 keyDown[e.key] = false;
-
                 sendStop();
-
             }
-
         });
-
     </script>
-
 </body>
-
 </html> 
-
