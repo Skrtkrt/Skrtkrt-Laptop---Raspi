@@ -289,16 +289,16 @@ def stop_motors(pca):
         set_pwm(pca, ch, 0)
 
 def rotate_left(pca, pwm):
-    set_pwm(pca, 0, pwm)  # Left wheels backward
-    set_pwm(pca, 1, 0)
-    set_pwm(pca, 2, 0)    # Right wheels forward
-    set_pwm(pca, 3, pwm)
-
-def rotate_right(pca, pwm):
     set_pwm(pca, 0, 0)    # Left wheels forward
     set_pwm(pca, 1, pwm)
     set_pwm(pca, 2, pwm)  # Right wheels backward
     set_pwm(pca, 3, 0)
+
+def rotate_right(pca, pwm):
+    set_pwm(pca, 0, pwm)  # Left wheels backward
+    set_pwm(pca, 1, 0)
+    set_pwm(pca, 2, 0)    # Right wheels forward
+    set_pwm(pca, 3, pwm)
 
 # === Water Level Sensor ===
 def read_water_level():
