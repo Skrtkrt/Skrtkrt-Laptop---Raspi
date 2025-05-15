@@ -20,23 +20,42 @@
             box-shadow: 0 2px 8px rgba(0,0,0,0.04);
         }
         .logo {
-            height: 48px;
+            width: 80px;
+            height: auto;
             cursor: pointer;
+            animation: logoSway 2s infinite ease-in-out;
         }
-        .nav {
+        .logo:hover {
+            animation: logoWiggle 0.5s infinite;
+        }
+        @keyframes logoSway {
+            0% { transform: rotate(-5deg); }
+            50% { transform: rotate(5deg); }
+            100% { transform: rotate(-5deg); }
+        }
+        @keyframes logoWiggle {
+            0% { transform: rotate(-8deg); }
+            25% { transform: rotate(8deg); }
+            50% { transform: rotate(-8deg); }
+            75% { transform: rotate(8deg); }
+            100% { transform: rotate(-8deg); }
+        }
+        .nav-menu {
             display: flex;
-            gap: 24px;
+            gap: 20px;
             align-items: center;
         }
-        .nav a {
-            color: #333;
+        .nav-menu a {
             text-decoration: none;
-            font-weight: 500;
-            font-size: 16px;
-            transition: color 0.2s;
+            color: #666;
+            font-size: 18px;
         }
-        .nav a.active, .nav a:hover {
-            color: #007bff;
+        .nav-menu a.active {
+            color: black;
+            font-weight: bold;
+        }
+        .nav-menu span {
+            color: #666;
         }
         .controller {
             display: flex;
@@ -77,11 +96,15 @@
 <body>
     <div class="header">
         <img src="/static/images/larva logo.png" alt="Logo" class="logo" onclick="window.location.href='/maps'">
-        <div class="nav">
+        <div class="nav-menu">
             <a href="/main">HOME</a>
+            <span>|</span>
             <a href="/maps" class="active">MAPS</a>
+            <span>|</span>
             <a href="/schedules">SCHEDULES</a>
+            <span>|</span>
             <a href="/notifications">NOTIFICATIONS</a>
+            <span>|</span>
             <a href="/error-logs">Error Logs</a>
         </div>
     </div>
