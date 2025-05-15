@@ -1,0 +1,135 @@
+<!-- Create a base template that other pages will extend -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Larva Tracker{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/common.css') }}">
+    {% block extra_css %}{% endblock %}
+    <style>
+        /* Common styles for all pages */
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 40px;
+        }
+
+        .logo {
+            width: 80px;
+            height: auto;
+            cursor: pointer;
+            transition: transform 0.3s ease;
+            animation: logoSway 2s infinite ease-in-out;
+        }
+
+        .logo:hover {
+            animation: logoWiggle 0.5s infinite;
+        }
+
+        @keyframes logoSway {
+            0% { transform: rotate(-5deg); }
+            50% { transform: rotate(5deg); }
+            100% { transform: rotate(-5deg); }
+        }
+
+        @keyframes logoWiggle {
+            0% { transform: rotate(-8deg); }
+            25% { transform: rotate(8deg); }
+            50% { transform: rotate(-8deg); }
+            75% { transform: rotate(8deg); }
+            100% { transform: rotate(-8deg); }
+        }
+
+        .nav-menu {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .nav-menu a {
+            text-decoration: none;
+            color: #666;
+            font-size: 18px;
+            transition: color 0.3s ease;
+        }
+
+        .nav-menu a.active {
+            color: black;
+            font-weight: bold;
+        }
+
+        .nav-menu span {
+            color: #666;
+        }
+
+        .footer {
+            background-color: #BFBFBF;
+            padding: 20px;
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            margin-top: auto;
+        }
+
+        .battery-indicator {
+            width: 50px;
+            height: 25px;
+            background-color: #00FF00;
+            border: 2px solid #333;
+            border-radius: 3px;
+            position: relative;
+        }
+
+        .battery-indicator::after {
+            content: '';
+            position: absolute;
+            right: -6px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 4px;
+            height: 10px;
+            background-color: #333;
+            border-radius: 0 2px 2px 0;
+        }
+    </style>
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    <div class="header">
+        <img src="{{ url_for('static', filename='images/larva logo.png') }}" alt="Logo" class="logo" onclick="window.location.href='/maps'">
+        <nav class="nav-menu">
+            <a href="/main" class="{{ 'active' if request.url.path == '/main' or request.url.path == '/' }}">HOME</a>
+            <span>|</span>
+            <a href="/maps" class="{{ 'active' if request.url.path == '/maps' }}">MAPS</a>
+            <span>|</span>
+            <a href="/schedules" class="{{ 'active' if request.url.path == '/schedules' }}">SCHEDULES</a>
+            <span>|</span>
+            <a href="/notifications" class="{{ 'active' if request.url.path == '/notifications' }}">NOTIFICATIONS</a>
+            <span>|</span>
+            <a href="{{ url_for('error_logs') }}" class="nav-link {% if request.path == '/error-logs' %}active{% endif %}">
+                <i class="fas fa-exclamation-triangle"></i>
+                <span>Error Logs</span>
+            </a>
+        </nav>
+    </div>
+
+    {% block content %}{% endblock %}
+
+    <script>
+    function sayGoodbye() {
+        window.location.href = "/goodbye";
+    }
+    </script>
+</body>
+</html> 
