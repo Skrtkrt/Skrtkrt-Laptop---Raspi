@@ -8,7 +8,7 @@ import threading
 # Setup I2C and TCA9548A multiplexer
 _i2c = busio.I2C(SCL, SDA)
 _tca = TCA9548A(_i2c)
-_pca_i2c = _tca[0]  # PCA9685 on channel 0
+_pca_i2c = _tca[1]  # PCA9685 for servos on channel 1 (was 0)
 _pca = PCA9685(_pca_i2c)
 _pca.frequency = 50  # Standard for servos
 
