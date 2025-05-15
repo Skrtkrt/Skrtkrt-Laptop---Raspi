@@ -1,89 +1,320 @@
-import time
-import busio
-from board import SCL, SDA
-from adafruit_pca9685 import PCA9685
-from adafruit_tca9548a import TCA9548A
-import threading
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Larva Tracker</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            background: white;
+        }
 
-# Setup I2C and TCA9548A multiplexer
-_i2c = busio.I2C(SCL, SDA)
-_tca = TCA9548A(_i2c)
-_pca_i2c = _tca[1]  # PCA9685 for servos on channel 1 (was 0)
-_pca = PCA9685(_pca_i2c)
-_pca.frequency = 50  # Standard for servos
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 40px;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: white;
+            z-index: 100;
+        }
 
-# Servo configuration
-servo_config = {
-    9: {"min": 90, "max": 180, "init": 180, "delay": 0.04},
-    10: {"min": 0, "max": 100, "init": 90, "delay": 0.08}
-}
+        .logo {
+            width: 80px;
+            height: auto;
+            cursor: pointer;
+            animation: logoSway 2s infinite ease-in-out;
+        }
 
-# Current positions
-current_angles = {
-    9: servo_config[9]["init"],
-    10: servo_config[10]["init"]
-}
+        .logo:hover {
+            animation: logoWiggle 0.5s infinite;
+        }
 
-# Object positions
-object_positions = {
-    "A": {9: 120, 10: 30},
-    "B": {9: 100, 10: 75},
-    "C": {9: 120, 10: 30},
-    "D": {9: 100, 10: 75}
-}
+        @keyframes logoSway {
+            0% { transform: rotate(-5deg); }
+            50% { transform: rotate(5deg); }
+            100% { transform: rotate(-5deg); }
+        }
 
-# Straight position
-straight_position = {
-    9: 90,
-    10: 0
-}
+        @keyframes logoWiggle {
+            0% { transform: rotate(-8deg); }
+            25% { transform: rotate(8deg); }
+            50% { transform: rotate(-8deg); }
+            75% { transform: rotate(8deg); }
+            100% { transform: rotate(-8deg); }
+        }
 
-# Lock for thread safety
-_servo_lock = threading.Lock()
+        .nav-menu {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
 
-# Convert angle to PWM signal
-def angle_to_pwm(angle):
-    pulse = 500 + (angle / 180) * 2000  # in microseconds
-    duty_cycle = int((pulse / 20000) * 65535)
-    return duty_cycle
+        .nav-menu a {
+            text-decoration: none;
+            color: #666;
+            font-size: 18px;
+        }
 
-# Move servo slowly
-def smooth_move(channel, current, target, delay):
-    step = 1 if target > current else -1
-    for angle in range(current, target + step, step):
-        _pca.channels[channel].duty_cycle = angle_to_pwm(angle)
-        time.sleep(delay)
-    return target
+        .nav-menu a.active {
+            color: black;
+            font-weight: bold;
+        }
 
-# Threaded move
-def threaded_servo_move(channel, target_angle, delay):
-    global current_angles
-    with _servo_lock:
-        current = current_angles[channel]
-        current_angles[channel] = smooth_move(channel, current, target_angle, delay)
+        .nav-menu span {
+            color: #666;
+        }
 
-def move_both_channels(targets):
-    threads = []
-    for ch in targets:
-        thread = threading.Thread(target=threaded_servo_move, args=(ch, targets[ch], servo_config[ch]["delay"]))
-        threads.append(thread)
-        thread.start()
-    for thread in threads:
-        thread.join()
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 120px 20px 100px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
 
-def initialize_servos():
-    move_both_channels({9: servo_config[9]["init"], 10: servo_config[10]["init"]})
+        .robot-image {
+            width: 450px;
+            height: auto;
+            margin-bottom: 40px;
+            animation: robotSway 3s infinite ease-in-out;
+            transition: transform 0.3s ease;
+            object-fit: contain;
+        }
 
-def move_to_object(obj_label):
-    if obj_label not in object_positions:
-        raise ValueError(f"Invalid object label: {obj_label}")
-    # Move to straight position first
-    move_both_channels(straight_position)
-    # Move to object position
-    move_both_channels(object_positions[obj_label])
+        .robot-image:hover {
+            animation: robotWiggle 0.5s infinite;
+            transform: scale(1.05);
+        }
 
-def move_to_straight():
-    move_both_channels(straight_position)
+        .title {
+            font-size: 42px;
+            margin-bottom: 35px;
+            position: relative;
+            z-index: 2;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+        }
 
-def move_to_rest():
-    move_both_channels({9: servo_config[9]["init"], 10: servo_config[10]["init"]}) 
+        .toggle-button {
+            position: relative;
+            z-index: 2;
+            padding: 15px 30px;
+            font-size: 24px;
+            cursor: pointer;
+            background-color: #ff0000;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            transform: scale(1.1);
+        }
+
+        .toggle-button.on {
+            background-color: #00ff00;
+        }
+
+        .toggle-button.auto {
+            background-color: #0000ff;
+        }
+
+        .footer {
+            background-color: #BFBFBF;
+            padding: 20px;
+            display: flex;
+            gap: 40px;
+            align-items: center;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 40px;
+        }
+
+        .battery-indicator {
+            width: 50px;
+            height: 25px;
+            background-color: #00FF00;
+            border: 2px solid #333;
+            border-radius: 3px;
+            position: relative;
+            margin-left: 20px;
+        }
+
+        .battery-indicator::after {
+            content: '';
+            position: absolute;
+            right: -6px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 4px;
+            height: 10px;
+            background-color: #333;
+            border-radius: 0 2px 2px 0;
+        }
+
+        .water-tank {
+            width: 30px;
+            height: 40px;
+            border: 2px solid #333;
+            border-radius: 5px;
+            background-color: #00FF00;
+            position: relative;
+        }
+
+        .water-tank::before {
+            content: '';
+            position: absolute;
+            top: -8px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 16px;
+            height: 8px;
+            background-color: #333;
+            border-radius: 3px 3px 0 0;
+        }
+
+        .dropdown {
+            position: relative;
+            display: inline-block;
+        }
+
+        .dropdown-content {
+            display: none;
+            position: absolute;
+            background-color: white;
+            min-width: 160px;
+            box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2);
+            z-index: 1;
+            border-radius: 5px;
+        }
+
+        .dropdown-content a {
+            color: #666;
+            padding: 12px 16px;
+            text-decoration: none;
+            display: block;
+        }
+
+        .dropdown-content a:hover {
+            background-color: #f1f1f1;
+            border-radius: 5px;
+        }
+
+        .dropdown:hover .dropdown-content {
+            display: block;
+        }
+
+        .dropdown > a::after {
+            content: ' ▼';
+            font-size: 12px;
+            vertical-align: middle;
+        }
+
+        @keyframes robotSway {
+            0% { transform: rotate(-4deg); }
+            50% { transform: rotate(4deg); }
+            100% { transform: rotate(-4deg); }
+        }
+
+        @keyframes robotWiggle {
+            0% { transform: rotate(-6deg); }
+            25% { transform: rotate(6deg); }
+            50% { transform: rotate(-6deg); }
+            75% { transform: rotate(6deg); }
+            100% { transform: rotate(-6deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <img src="{{ url_for('static', filename='images/larva logo.png') }}" alt="Logo" class="logo" onclick="window.location.href='/maps'">
+        <nav class="nav-menu">
+            <div class="dropdown">
+                <a href="/main" class="active">HOME</a>
+                <div class="dropdown-content">
+                    <a href="/change_password">Change Password</a>
+                    <a href="/logout">Logout</a>
+                </div>
+            </div>
+            <span>|</span>
+            <a href="/maps">MAPS</a>
+            <span>|</span>
+            <a href="/schedules">SCHEDULES</a>
+            <span>|</span>
+            <a href="/notifications">NOTIFICATIONS</a>
+            <span>|</span>
+            <a href="/error-logs">ERROR LOGS</a>
+        </nav>
+    </div>
+
+    <div class="main-content">
+        <img src="{{ url_for('static', filename='images/robot.png') }}" alt="Robot" class="robot-image">
+        <h1 class="title">LARVA TRACKER</h1>
+        <div class="system-status" style="font-size: 2rem; color: #00c800; font-weight: bold; margin-top: 20px;">SYSTEM ACTIVE</div>
+        <div id="sampleHistory" style="margin-top: 40px; max-width: 900px; width: 100%; display: none;">
+            <h2>Sample History</h2>
+            <table style="width:100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background:#eee;">
+                        <th>Timestamp</th>
+                        <th>Point</th>
+                        <th>pH</th>
+                        <th>DO</th>
+                        <th>Turbidity</th>
+                        <th>Temp (°C)</th>
+                        <th>Water Level</th>
+                    </tr>
+                </thead>
+                <tbody id="historyTableBody">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+    // No toggle logic needed; system is always ON
+    // --- Sample History Table ---
+    function updateSampleHistory() {
+        fetch('/api/sample_history')
+            .then(res => res.json())
+            .then(history => {
+                const tbody = document.getElementById('historyTableBody');
+                tbody.innerHTML = '';
+                history.forEach(row => {
+                    tbody.innerHTML += `<tr>
+                        <td>${row.timestamp}</td>
+                        <td>${row.point}</td>
+                        <td>${row.ph !== null ? row.ph.toFixed(2) : ''}</td>
+                        <td>${row.do !== null ? row.do.toFixed(2) : ''}</td>
+                        <td>${row.turbidity !== null ? row.turbidity.toFixed(2) : ''}</td>
+                        <td>${row.temp !== null ? row.temp.toFixed(2) : ''}</td>
+                        <td>${row.water_level !== null ? row.water_level.toFixed(2) : ''}</td>
+                    </tr>`;
+                });
+            });
+    }
+    // Show/hide sample history
+    document.getElementById('samplesTab').onclick = function() {
+        const hist = document.getElementById('sampleHistory');
+        if (hist.style.display === 'none') {
+            updateSampleHistory();
+            hist.style.display = 'block';
+        } else {
+            hist.style.display = 'none';
+        }
+    };
+    </script>
+</body>
+</html> 
