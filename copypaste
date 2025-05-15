@@ -108,38 +108,70 @@
             <a href="/error-logs">Error Logs</a>
         </div>
     </div>
+    <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:24px;">
+        <label for="pwmSlider" style="font-size:1.1rem; font-weight:500; margin-bottom:8px;">Motor Speed (PWM): <span id="pwmValue">32768</span></label>
+        <input type="range" id="pwmSlider" min="20000" max="65535" value="32768" style="width:300px;">
+    </div>
     <div class="controller">
-        <button class="ctrl-btn" onclick="sendAction('forward')">Forward</button>
+        <button class="ctrl-btn" id="forwardBtn">Forward</button>
         <div class="row">
-            <button class="ctrl-btn" onclick="sendAction('left')">&#8592; Rotate Counter Clockwise</button>
-            <button class="ctrl-btn" onclick="sendAction('right')">Rotate Clockwise &#8594;</button>
+            <button class="ctrl-btn" id="leftBtn">&#8592; Rotate Counter Clockwise</button>
+            <button class="ctrl-btn" id="rightBtn">Rotate Clockwise &#8594;</button>
         </div>
-        <button class="ctrl-btn" onclick="sendAction('backward')">Reverse</button>
-        <button class="ctrl-btn" onclick="sendAction('stop')" style="background:#dc3545;">Stop</button>
+        <button class="ctrl-btn" id="backwardBtn">Reverse</button>
+        <button class="ctrl-btn" onclick="sendStop()" style="background:#dc3545;">Stop</button>
     </div>
     <script>
-        function sendAction(action) {
+        // --- PWM Slider Logic ---
+        const pwmSlider = document.getElementById('pwmSlider');
+        const pwmValue = document.getElementById('pwmValue');
+        pwmSlider.addEventListener('input', () => {
+            pwmValue.textContent = pwmSlider.value;
+        });
+        function getPWM() { return parseInt(pwmSlider.value); }
+
+        // --- Real-Time Button Control ---
+        function sendAction(action, pwm) {
             fetch('/manual_control', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action })
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.status !== 'success') {
-                    alert('Error: ' + (data.message || 'Unknown error'));
-                }
-            })
-            .catch(() => alert('Failed to send command.'));
+                body: JSON.stringify({ action, pwm })
+            });
         }
-        // Keyboard support
+        function sendStop() {
+            sendAction('stop', getPWM());
+        }
+        function setupRealtimeButton(btnId, action) {
+            const btn = document.getElementById(btnId);
+            let isPressed = false;
+            // Mouse events
+            btn.addEventListener('mousedown', () => { isPressed = true; sendAction(action, getPWM()); });
+            btn.addEventListener('mouseup', () => { isPressed = false; sendStop(); });
+            btn.addEventListener('mouseleave', () => { if (isPressed) { isPressed = false; sendStop(); } });
+            // Touch events
+            btn.addEventListener('touchstart', (e) => { e.preventDefault(); isPressed = true; sendAction(action, getPWM()); });
+            btn.addEventListener('touchend', () => { isPressed = false; sendStop(); });
+        }
+        setupRealtimeButton('forwardBtn', 'forward');
+        setupRealtimeButton('backwardBtn', 'backward');
+        setupRealtimeButton('leftBtn', 'left');
+        setupRealtimeButton('rightBtn', 'right');
+        // --- Keyboard support ---
+        const keyMap = { ArrowUp: 'forward', ArrowDown: 'backward', ArrowLeft: 'left', ArrowRight: 'right' };
+        let keyDown = {};
         document.addEventListener('keydown', function(e) {
             if (e.repeat) return;
-            if (e.key === 'ArrowUp') sendAction('forward');
-            if (e.key === 'ArrowDown') sendAction('backward');
-            if (e.key === 'ArrowLeft') sendAction('left');
-            if (e.key === 'ArrowRight') sendAction('right');
-            if (e.key === ' ') sendAction('stop');
+            if (keyMap[e.key] && !keyDown[e.key]) {
+                keyDown[e.key] = true;
+                sendAction(keyMap[e.key], getPWM());
+            }
+            if (e.key === ' ') sendStop();
+        });
+        document.addEventListener('keyup', function(e) {
+            if (keyMap[e.key]) {
+                keyDown[e.key] = false;
+                sendStop();
+            }
         });
     </script>
 </body>
