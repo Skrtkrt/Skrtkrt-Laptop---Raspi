@@ -1,385 +1,234 @@
-// Pattern types
-const PATTERNS = {
-    SPIRAL: 'spiral',
-    GRID: 'grid',
-    ZIGZAG: 'zigzag'
-};
-
-// Circle radius in meters
-const PATROL_RADIUS = 15;
-
-// Rover width in meters
-const ROVER_WIDTH = 0.56;
-
-// === Live Rover Position and Navigation Visualization ===
-let roverMarker = null;
-let navLine = null;
-let navStatusDiv = null;
-let navTarget = null;
-
-function initializeMap() {
-    // Pampanga, Philippines center
-    const pampangaCenter = [15.0794, 120.6190];
-    const map = L.map('map', {
-        maxBounds: [
-            [4.6431, 116.9549],
-            [21.1205, 126.5995]
-        ],
-        maxBoundsViscosity: 1.0,
-        minZoom: 6
-    }).setView(pampangaCenter, 11);
-
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-
-    // Initialize points with circles
-    const points = {
-        'A': { color: '#FF9966', circle: null, pattern: null, patternPoints: [], currentPointIndex: 0 },
-        'B': { color: '#66CCFF', circle: null, pattern: null, patternPoints: [], currentPointIndex: 0 },
-        'C': { color: '#FF66B2', circle: null, pattern: null, patternPoints: [], currentPointIndex: 0 },
-        'D': { color: '#99FF66', circle: null, pattern: null, patternPoints: [], currentPointIndex: 0 }
-    };
-
-    // Initialize docking station
-    let dockingStation = null;
-    let isReturningToDock = false;
-
-    // WebSocket connection
-    const socket = io();
-    
-    // Load docking station from backend
-    fetch('/get_docking_station')
-        .then(res => res.json())
-        .then(data => {
-            if (data.lat && data.lng) {
-                setDockingStation({lat: data.lat, lng: data.lng}, false);
-            }
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manual Control - Larva Tracker</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        body {
+            margin: 0;
+            background: #f5f5f5;
+            font-family: Arial, sans-serif;
+        }
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: #fff;
+            padding: 10px 40px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        }
+        .logo {
+            width: 80px;
+            height: auto;
+            cursor: pointer;
+            animation: logoSway 2s infinite ease-in-out;
+        }
+        .logo:hover {
+            animation: logoWiggle 0.5s infinite;
+        }
+        @keyframes logoSway {
+            0% { transform: rotate(-5deg); }
+            50% { transform: rotate(5deg); }
+            100% { transform: rotate(-5deg); }
+        }
+        @keyframes logoWiggle {
+            0% { transform: rotate(-8deg); }
+            25% { transform: rotate(8deg); }
+            50% { transform: rotate(-8deg); }
+            75% { transform: rotate(8deg); }
+            100% { transform: rotate(-8deg); }
+        }
+        .nav-menu {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+        .nav-menu a {
+            text-decoration: none;
+            color: #666;
+            font-size: 18px;
+        }
+        .nav-menu a.active {
+            color: black;
+            font-weight: bold;
+        }
+        .nav-menu span {
+            color: #666;
+        }
+        .dpad-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 60vh;
+            margin-top: 32px;
+        }
+        .dpad-btn {
+            width: 100px;
+            height: 100px;
+            font-size: 3rem;
+            background: #111;
+            color: #fff;
+            border: none;
+            border-radius: 18px;
+            margin: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+        }
+        .dpad-btn:active {
+            background: #007bff;
+            transform: scale(0.97);
+        }
+        .dpad-middle-row {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+        }
+        .dpad-center {
+            width: 100px;
+            height: 100px;
+        }
+        .dpad-diagonal-row {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+        }
+        @media (max-width: 600px) {
+            .dpad-btn, .dpad-center { width: 60px; height: 60px; font-size: 1.5rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <img src="/static/images/larva logo.png" alt="Logo" class="logo" onclick="window.location.href='/maps'">
+        <div class="nav-menu">
+            <a href="/main">HOME</a>
+            <span>|</span>
+            <a href="/maps" class="active">MAPS</a>
+            <span>|</span>
+            <a href="/schedules">SCHEDULES</a>
+            <span>|</span>
+            <a href="/notifications">NOTIFICATIONS</a>
+            <span>|</span>
+            <a href="/error-logs">Error Logs</a>
+        </div>
+    </div>
+    <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:24px;">
+        <label for="pwmSlider" style="font-size:1.1rem; font-weight:500; margin-bottom:8px;">Motor Speed (PWM): <span id="pwmValue">32768</span></label>
+        <input type="range" id="pwmSlider" min="20000" max="65535" value="32768" style="width:300px;">
+    </div>
+    <div class="dpad-container">
+        <div class="dpad-diagonal-row">
+            <button class="dpad-btn" id="northwestBtn">&#8598;</button>
+            <button class="dpad-btn" id="forwardBtn">&#8593;</button>
+            <button class="dpad-btn" id="northeastBtn">&#8599;</button>
+        </div>
+        <div class="dpad-middle-row">
+            <button class="dpad-btn" id="leftBtn">&#8592;</button>
+            <div class="dpad-center"></div>
+            <button class="dpad-btn" id="rightBtn">&#8594;</button>
+        </div>
+        <div class="dpad-diagonal-row">
+            <button class="dpad-btn" id="southwestBtn">&#8601;</button>
+            <button class="dpad-btn" id="backwardBtn">&#8595;</button>
+            <button class="dpad-btn" id="southeastBtn">&#8600;</button>
+        </div>
+    </div>
+    <div class="arm-control-section">
+        <h3>Robot Arm Control</h3>
+        <div>
+            <label for="channel9Slider">Channel 9: <span id="channel9Value">90</span>°</label>
+            <input type="range" id="channel9Slider" min="110" max="180" value="90" style="width:300px;">
+        </div>
+        <div>
+            <label for="channel10Slider">Channel 10: <span id="channel10Value">15</span>°</label>
+            <input type="range" id="channel10Slider" min="0" max="100" value="15" style="width:300px;">
+        </div>
+        <div>
+            <label for="channel11Slider">Channel 11: <span id="channel11Value">0</span>°</label>
+            <input type="range" id="channel11Slider" min="0" max="180" value="0" style="width:300px;">
+        </div>
+        <button id="sendArmAngles">Send Arm Angles</button>
+    </div>
+    <div class="status-section">
+        <h3>System Status</h3>
+        <p id="status-message">Loading status...</p>
+    </div>
+    <script>
+        // --- PWM Slider Logic ---
+        const pwmSlider = document.getElementById('pwmSlider');
+        const pwmValue = document.getElementById('pwmValue');
+        pwmSlider.addEventListener('input', () => {
+            pwmValue.textContent = pwmSlider.value;
         });
-    
-    // Handle point selection
-    function handlePointSelection(point, latlng) {
-        // Remove existing circle if any
-        if (points[point].circle) {
-            map.removeLayer(points[point].circle);
-        }
+        function getPWM() { return parseInt(pwmSlider.value); }
 
-        // Create new circle
-        points[point].circle = L.circle(latlng, {
-            radius: PATROL_RADIUS,
-            color: points[point].color,
-            fillColor: points[point].color,
-            fillOpacity: 0.1
-        }).addTo(map);
-
-        // Generate pattern points
-        generatePatternPoints(point, latlng);
-        
-        // Start pattern execution
-        startPatternExecution(point);
-    }
-
-    // Generate pattern points within the circle
-    function generatePatternPoints(point, center) {
-        const pattern = points[point].pattern || PATTERNS.SPIRAL;
-        const points = [];
-        
-        switch(pattern) {
-            case PATTERNS.SPIRAL:
-                generateSpiralPattern(center, points);
-                break;
-            case PATTERNS.GRID:
-                generateGridPattern(center, points);
-                break;
-            case PATTERNS.ZIGZAG:
-                generateZigzagPattern(center, points);
-                break;
-        }
-
-        points[point].patternPoints = points;
-        drawPatternPoints(point, points);
-    }
-
-    // Start pattern execution
-    function startPatternExecution(point) {
-        if (!points[point].patternPoints.length) return;
-        
-        points[point].currentPointIndex = 0;
-        moveToNextPoint(point);
-    }
-
-    // Move to next point in pattern
-    function moveToNextPoint(point) {
-        if (isReturningToDock) return;
-
-        const patternPoints = points[point].patternPoints;
-        const currentIndex = points[point].currentPointIndex;
-
-        if (currentIndex < patternPoints.length) {
-            // Move to next point in pattern
-            const nextPoint = patternPoints[currentIndex];
-            
-            // Send movement command
-            socket.emit('move_to', {
-                lat: nextPoint[0],
-                lng: nextPoint[1]
-            });
-            
-            points[point].currentPointIndex++;
-            
-            // Schedule next point movement
-            setTimeout(() => moveToNextPoint(point), 2000); // 2 second delay between points
-        } else {
-            // Pattern complete, return to dock
-            returnToDock();
-        }
-    }
-
-    // Return to docking station
-    function returnToDock() {
-        if (!dockingStation) return;
-        
-        isReturningToDock = true;
-        const dockLatLng = dockingStation.getLatLng();
-        
-        socket.emit('move_to', {
-            lat: dockLatLng.lat,
-            lng: dockLatLng.lng,
-            isReturningToDock: true
-        });
-
-        // Update UI to show returning status
-        document.getElementById('pattern-status').textContent = 'Returning to docking station...';
-    }
-
-    // Set docking station
-    function setDockingStation(latlng, save=true) {
-        if (dockingStation) {
-            map.removeLayer(dockingStation);
-        }
-        dockingStation = L.marker([latlng.lat, latlng.lng], {
-            icon: L.divIcon({
-                className: 'docking-station-marker',
-                html: `<div style="background-color: #2196F3; width: 32px; height: 32px; border-radius: 50%; border: 3px solid white; display: flex; align-items: center; justify-content: center;">
-                        <div style="width: 16px; height: 16px; background-color: white; border-radius: 50%;"></div>
-                      </div>`,
-                iconSize: [32, 32],
-                iconAnchor: [16, 16]
-            })
-        }).addTo(map);
-        if (save) {
-            fetch('/set_docking_station', {
+        // --- Real-Time Button Control ---
+        function sendAction(action, pwm) {
+            fetch('/manual_control', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ lat: latlng.lat, lng: latlng.lng })
-        });
+                body: JSON.stringify({ action, pwm })
+            });
         }
-    }
-
-    // Handle pattern selection
-    function handlePatternSelection(point, pattern) {
-        points[point].pattern = pattern;
-        if (points[point].circle) {
-            generatePatternPoints(point, points[point].circle.getLatLng());
-            startPatternExecution(point);
+        function sendStop() {
+            sendAction('stop', getPWM());
         }
-    }
-
-    // WebSocket event handlers
-    socket.on('position_update', function(data) {
-        if (data.isReturningToDock && data.reachedDock) {
-            isReturningToDock = false;
-            document.getElementById('pattern-status').textContent = 'Docked at station';
+        function setupRealtimeButton(btnId, action) {
+            const btn = document.getElementById(btnId);
+            let isPressed = false;
+            // Mouse events
+            btn.addEventListener('mousedown', () => { isPressed = true; sendAction(action, getPWM()); });
+            btn.addEventListener('mouseup', () => { isPressed = false; sendStop(); });
+            btn.addEventListener('mouseleave', () => { if (isPressed) { isPressed = false; sendStop(); } });
+            // Touch events
+            btn.addEventListener('touchstart', (e) => { e.preventDefault(); isPressed = true; sendAction(action, getPWM()); });
+            btn.addEventListener('touchend', () => { isPressed = false; sendStop(); });
         }
-    });
-
-    return {
-        map,
-        setDockingStation,
-        handlePatternSelection
-    };
-}
-
-function generateSpiralPattern(center, pointsArr) {
-    // Spiral out from center, step = rover width
-    const maxRadius = PATROL_RADIUS;
-    const step = ROVER_WIDTH;
-    let angle = 0;
-    let radius = 0;
-    while (radius <= maxRadius) {
-        // Convert polar to lat/lng
-        const dLat = (radius / 111111) * Math.cos(angle); // rough meters to lat
-        const dLng = (radius / (111111 * Math.cos(center.lat * Math.PI / 180))) * Math.sin(angle); // meters to lng
-        pointsArr.push([center.lat + dLat, center.lng + dLng]);
-        angle += Math.PI / 6; // 30 deg step
-        if (angle >= 2 * Math.PI) {
-            angle -= 2 * Math.PI;
-            radius += step;
-        }
-    }
-}
-
-function generateGridPattern(center, pointsArr) {
-    // Grid pattern, step = rover width
-    const step = ROVER_WIDTH;
-    const maxRadius = PATROL_RADIUS;
-    const numSteps = Math.floor((2 * maxRadius) / step);
-    for (let i = -numSteps/2; i <= numSteps/2; i++) {
-        for (let j = -numSteps/2; j <= numSteps/2; j++) {
-            const x = i * step;
-            const y = j * step;
-            if (Math.sqrt(x*x + y*y) <= maxRadius) {
-                // Convert meters to lat/lng
-                const dLat = y / 111111;
-                const dLng = x / (111111 * Math.cos(center.lat * Math.PI / 180));
-                pointsArr.push([center.lat + dLat, center.lng + dLng]);
-            }
-        }
-    }
-}
-
-function generateZigzagPattern(center, pointsArr) {
-    // Zigzag pattern, step = rover width
-    const step = ROVER_WIDTH;
-    const maxRadius = PATROL_RADIUS;
-    const numLines = Math.floor((2 * maxRadius) / step);
-    for (let i = -numLines/2; i <= numLines/2; i++) {
-        let linePoints = [];
-        for (let j = -numLines/2; j <= numLines/2; j++) {
-            const x = i * step;
-            const y = j * step;
-            if (Math.sqrt(x*x + y*y) <= maxRadius) {
-                const dLat = y / 111111;
-                const dLng = x / (111111 * Math.cos(center.lat * Math.PI / 180));
-                linePoints.push([center.lat + dLat, center.lng + dLng]);
-            }
-        }
-        if (i % 2 === 0) {
-            pointsArr.push(...linePoints);
-        } else {
-            pointsArr.push(...linePoints.reverse());
-        }
-    }
-}
-
-// === Point-to-Point Navigation ===
-function startPointToPointNavigation(targetLatLng) {
-    navTarget = [targetLatLng.lat, targetLatLng.lng];
-    // Draw initial nav line from current rover position
-    if (roverMarker) {
-        drawNavLine(roverMarker.getLatLng(), navTarget);
-    }
-    showNavStatus('Navigating to target...');
-    fetch('/move_rover', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lat: targetLatLng.lat, lng: targetLatLng.lng })
-    })
-    .then(res => res.json())
-    .then(data => {
-        if (data.status === 'arrived') {
-            showNavStatus('Arrived at target!');
-        } else if (data.status === 'timeout') {
-            showNavStatus('Timeout: Could not reach target.');
-        } else if (data.status === 'error') {
-            showNavStatus('Error: ' + data.message);
-        }
-        navTarget = null;
-        if (navLine) { map.removeLayer(navLine); navLine = null; }
-        setTimeout(hideNavStatus, 4000);
-    })
-    .catch(err => {
-        showNavStatus('Navigation error');
-        navTarget = null;
-        if (navLine) { map.removeLayer(navLine); navLine = null; }
-        setTimeout(hideNavStatus, 4000);
-    });
-}
-
-function updateRoverPosition() {
-    fetch('/api/gps')
-        .then(res => res.json())
-        .then(gps => {
-            if (gps && gps.lat && gps.lng) {
-                if (!roverMarker) {
-                    roverMarker = L.marker([gps.lat, gps.lng], {icon: L.icon({iconUrl: '/static/images/rover.png', iconSize: [32,32], iconAnchor: [16,16]})}).addTo(map);
-                } else {
-                    roverMarker.setLatLng([gps.lat, gps.lng]);
+        setupRealtimeButton('forwardBtn', 'forward');
+        setupRealtimeButton('backwardBtn', 'backward');
+        setupRealtimeButton('leftBtn', 'left');
+        setupRealtimeButton('rightBtn', 'right');
+        setupRealtimeButton('northwestBtn', 'northwest');
+        setupRealtimeButton('northeastBtn', 'northeast');
+        setupRealtimeButton('southwestBtn', 'southwest');
+        setupRealtimeButton('southeastBtn', 'southeast');
+        // --- Keyboard support ---
+        const keyMap = { ArrowUp: 'forward', ArrowDown: 'backward', ArrowLeft: 'left', ArrowRight: 'right',
+            wq: 'northwest', we: 'northeast', sq: 'southwest', se: 'southeast' };
+        let keyDown = {};
+        let combo = '';
+        document.addEventListener('keydown', function(e) {
+            if (e.repeat) return;
+            if (e.key.length === 1) combo += e.key.toLowerCase();
+            if (keyMap[e.key]) {
+                if (!keyDown[e.key]) {
+                    keyDown[e.key] = true;
+                    sendAction(keyMap[e.key], getPWM());
                 }
-                // If navigating, update nav line
-                if (navTarget) {
-                    drawNavLine([gps.lat, gps.lng], navTarget);
+            } else if (keyMap[combo]) {
+                if (!keyDown[combo]) {
+                    keyDown[combo] = true;
+                    sendAction(keyMap[combo], getPWM());
                 }
             }
+            if (e.key === ' ') sendStop();
         });
-}
-setInterval(updateRoverPosition, 1000);
-updateRoverPosition();
-
-function drawNavLine(from, to) {
-    if (navLine) map.removeLayer(navLine);
-    navLine = L.polyline([from, to], {color: 'red', weight: 4, dashArray: '8,8'}).addTo(map);
-}
-
-function showNavStatus(msg) {
-    if (!navStatusDiv) {
-        navStatusDiv = document.createElement('div');
-        navStatusDiv.style.position = 'fixed';
-        navStatusDiv.style.bottom = '30px';
-        navStatusDiv.style.left = '50%';
-        navStatusDiv.style.transform = 'translateX(-50%)';
-        navStatusDiv.style.background = '#222';
-        navStatusDiv.style.color = 'white';
-        navStatusDiv.style.padding = '12px 32px';
-        navStatusDiv.style.borderRadius = '8px';
-        navStatusDiv.style.fontSize = '18px';
-        navStatusDiv.style.zIndex = 3000;
-        document.body.appendChild(navStatusDiv);
-    }
-    navStatusDiv.textContent = msg;
-    navStatusDiv.style.display = 'block';
-}
-function hideNavStatus() {
-    if (navStatusDiv) navStatusDiv.style.display = 'none';
-}
-
-function fetchStatus() {
-    fetch('/status')
-        .then(response => response.json())
-        .then(data => {
-            document.getElementById('status-message').textContent = data.message;
-        })
-        .catch(error => {
-            console.error('Error fetching status:', error);
-            document.getElementById('status-message').textContent = 'Error loading status';
+        document.addEventListener('keyup', function(e) {
+            if (keyMap[e.key]) {
+                keyDown[e.key] = false;
+                sendStop();
+            } else if (combo && keyMap[combo]) {
+                keyDown[combo] = false;
+                sendStop();
+                combo = '';
+            }
         });
-}
-
-// Call fetchStatus when the page loads
-document.addEventListener('DOMContentLoaded', fetchStatus);
-
-function sendArmAngles() {
-    const channel9Angle = document.getElementById('channel9Slider').value;
-    const channel10Angle = document.getElementById('channel10Slider').value;
-    const channel11Angle = document.getElementById('channel11Slider').value;
-
-    fetch('/send_arm_angles', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            channel9: channel9Angle,
-            channel10: channel10Angle,
-            channel11: channel11Angle
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        console.log('Arm angles sent:', data);
-    })
-    .catch(error => {
-        console.error('Error sending arm angles:', error);
-    });
-}
-
-document.getElementById('sendArmAngles').addEventListener('click', sendArmAngles);
-
-// Add other map-related functions here 
-// Add other map-related functions here 
+    </script>
+</body>
+</html> 
