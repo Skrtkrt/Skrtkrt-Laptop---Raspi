@@ -260,12 +260,17 @@ def select_tca_channel(channel):
     _i2c.writeto(0x70, bytes([1 << channel]))
 
 # === PCA9685 Setup ===
+def reset_all_channels(pca):
+    for ch in range(16):
+        pca.channels[ch].duty_cycle = 0
+
 def setup_pca9685(channel):
     if _i2c is None:
         initialize_hardware()
     select_tca_channel(channel)
     pca = PCA9685(_i2c)
     pca.frequency = 1000
+    reset_all_channels(pca)
     return pca
 
 # === PWM Control ===
