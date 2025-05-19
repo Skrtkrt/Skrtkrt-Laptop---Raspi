@@ -79,6 +79,8 @@ _pca = None
 _i2c_singleton = None
 _tca_singleton = None
 
+_pca_mode = 'servo'  # Default mode
+
 def get_pca9685():
     global _pca, _i2c_singleton, _tca_singleton
     if _pca is None:
@@ -540,4 +542,21 @@ def read_water_level():
     with _ads_lock:
         channel = AnalogIn(_ads, 3)  # ADS.P3
         voltage = channel.voltage
-        return channel.value, voltage 
+        return channel.value, voltage
+
+def set_pca_mode(mode):
+    global _pca_mode
+    with _pca_lock:
+        pca = get_pca9685()
+        if mode == 'servo':
+            pca.frequency = 50
+            _pca_mode = 'servo'
+        elif mode == 'motor':
+            pca.frequency = 1000
+            _pca_mode = 'motor'
+        else:
+            raise ValueError('Invalid mode. Use "servo" or "motor".')
+
+def get_pca_mode():
+    global _pca_mode
+    return _pca_mode 
