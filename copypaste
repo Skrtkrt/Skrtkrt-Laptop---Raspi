@@ -1,254 +1,515 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Manual Control - Larva Tracker</title>
-    <link rel="stylesheet" href="/static/css/styles.css">
-    <style>
-        body {
-            margin: 0;
-            background: #f5f5f5;
-            font-family: Arial, sans-serif;
-        }
-        .header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            background: #fff;
-            padding: 10px 40px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-        }
-        .logo {
-            width: 80px;
-            height: auto;
-            cursor: pointer;
-            animation: logoSway 2s infinite ease-in-out;
-        }
-        .logo:hover {
-            animation: logoWiggle 0.5s infinite;
-        }
-        @keyframes logoSway {
-            0% { transform: rotate(-5deg); }
-            50% { transform: rotate(5deg); }
-            100% { transform: rotate(-5deg); }
-        }
-        @keyframes logoWiggle {
-            0% { transform: rotate(-8deg); }
-            25% { transform: rotate(8deg); }
-            50% { transform: rotate(-8deg); }
-            75% { transform: rotate(8deg); }
-            100% { transform: rotate(-8deg); }
-        }
-        .nav-menu {
-            display: flex;
-            gap: 20px;
-            align-items: center;
-        }
-        .nav-menu a {
-            text-decoration: none;
-            color: #666;
-            font-size: 18px;
-        }
-        .nav-menu a.active {
-            color: black;
-            font-weight: bold;
-        }
-        .nav-menu span {
-            color: #666;
-        }
-        .dpad-container {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 60vh;
-            margin-top: 32px;
-        }
-        .dpad-btn {
-            width: 100px;
-            height: 100px;
-            font-size: 3rem;
-            background: #111;
-            color: #fff;
-            border: none;
-            border-radius: 18px;
-            margin: 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.12);
-            cursor: pointer;
-            transition: background 0.2s, transform 0.1s;
-        }
-        .dpad-btn:active {
-            background: #007bff;
-            transform: scale(0.97);
-        }
-        .dpad-middle-row {
-            display: flex;
-            flex-direction: row;
-            align-items: center;
-            justify-content: center;
-        }
-        .dpad-center {
-            width: 100px;
-            height: 100px;
-        }
-        .dpad-diagonal-row {
-            display: flex;
-            flex-direction: row;
-            align-items: center;
-            justify-content: center;
-        }
-        @media (max-width: 600px) {
-            .dpad-btn, .dpad-center { width: 60px; height: 60px; font-size: 1.5rem; }
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <img src="/static/images/larva logo.png" alt="Logo" class="logo" onclick="window.location.href='/maps'">
-        <div class="nav-menu">
-            <a href="/main">HOME</a>
-            <span>|</span>
-            <a href="/maps" class="active">MAPS</a>
-            <span>|</span>
-            <a href="/schedules">SCHEDULES</a>
-            <span>|</span>
-            <a href="/notifications">NOTIFICATIONS</a>
-            <span>|</span>
-            <a href="/error-logs">Error Logs</a>
-        </div>
-    </div>
-    <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:24px;">
-        <label for="pwmSlider" style="font-size:1.1rem; font-weight:500; margin-bottom:8px;">Motor Speed (PWM): <span id="pwmValue">32768</span></label>
-        <input type="range" id="pwmSlider" min="20000" max="65535" value="32768" style="width:300px;">
-    </div>
-    <div class="dpad-container">
-        <div class="dpad-diagonal-row">
-            <button class="dpad-btn" id="northwestBtn">&#8598;</button>
-            <button class="dpad-btn" id="forwardBtn">&#8593;</button>
-            <button class="dpad-btn" id="northeastBtn">&#8599;</button>
-        </div>
-        <div class="dpad-middle-row">
-            <button class="dpad-btn" id="leftBtn">&#8592;</button>
-            <div class="dpad-center"></div>
-            <button class="dpad-btn" id="rightBtn">&#8594;</button>
-        </div>
-        <div class="dpad-diagonal-row">
-            <button class="dpad-btn" id="southwestBtn">&#8601;</button>
-            <button class="dpad-btn" id="backwardBtn">&#8595;</button>
-            <button class="dpad-btn" id="southeastBtn">&#8600;</button>
-        </div>
-    </div>
-    <div id="servo-arm-control" style="margin-top:40px; text-align:center;">
-        <h3>Servo Arm Control</h3>
-        <label for="servo-channel">Channel:</label>
-        <select id="servo-channel">
-          <option value="9">9</option>
-          <option value="10">10</option>
-          <option value="11">11</option>
-        </select>
-        <label for="servo-angle">Angle:</label>
-        <input type="number" id="servo-angle" min="0" max="180" value="90">
-        <button onclick="setServoAngle()">Set Angle</button>
-        <button onclick="resetAllChannels()">Reset All Channels</button>
-        <div id="servo-status" style="margin-top:10px;"></div>
-    </div>
-    <script>
-        // --- PWM Slider Logic ---
-        const pwmSlider = document.getElementById('pwmSlider');
-        const pwmValue = document.getElementById('pwmValue');
-        pwmSlider.addEventListener('input', () => {
-            pwmValue.textContent = pwmSlider.value;
-        });
-        function getPWM() { return parseInt(pwmSlider.value); }
+import time
+import busio
+from board import SCL, SDA
+from adafruit_pca9685 import PCA9685
+from gpiozero import OutputDevice, DistanceSensor
+import board
+from adafruit_tca9548a import TCA9548A
+import adafruit_ads1x15.ads1115 as ADS
+from adafruit_ads1x15.analog_in import AnalogIn
+import Adafruit_ADS1x15  # For DO sensor
+import glob
+import os
+import serial  # For UART GPS
+import threading
+import queue
+import datetime
+try:
+    from picamera import PiCamera
+except (ImportError, OSError):
+    PiCamera = None
 
-        // --- Real-Time Button Control ---
-        function sendAction(action, pwm) {
-            fetch('/manual_control', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action, pwm })
-            });
-        }
-        function sendStop() {
-            sendAction('stop', getPWM());
-        }
-        function setupRealtimeButton(btnId, action) {
-            const btn = document.getElementById(btnId);
-            let isPressed = false;
-            // Mouse events
-            btn.addEventListener('mousedown', () => { isPressed = true; sendAction(action, getPWM()); });
-            btn.addEventListener('mouseup', () => { isPressed = false; sendStop(); });
-            btn.addEventListener('mouseleave', () => { if (isPressed) { isPressed = false; sendStop(); } });
-            // Touch events
-            btn.addEventListener('touchstart', (e) => { e.preventDefault(); isPressed = true; sendAction(action, getPWM()); });
-            btn.addEventListener('touchend', () => { isPressed = false; sendStop(); });
-        }
-        setupRealtimeButton('forwardBtn', 'forward');
-        setupRealtimeButton('backwardBtn', 'backward');
-        setupRealtimeButton('leftBtn', 'left');
-        setupRealtimeButton('rightBtn', 'right');
-        setupRealtimeButton('northwestBtn', 'northwest');
-        setupRealtimeButton('northeastBtn', 'northeast');
-        setupRealtimeButton('southwestBtn', 'southwest');
-        setupRealtimeButton('southeastBtn', 'southeast');
-        // --- Keyboard support ---
-        const keyMap = { ArrowUp: 'forward', ArrowDown: 'backward', ArrowLeft: 'left', ArrowRight: 'right',
-            wq: 'northwest', we: 'northeast', sq: 'southwest', se: 'southeast' };
-        let keyDown = {};
-        let combo = '';
-        document.addEventListener('keydown', function(e) {
-            if (e.repeat) return;
-            if (e.key.length === 1) combo += e.key.toLowerCase();
-            if (keyMap[e.key]) {
-                if (!keyDown[e.key]) {
-                    keyDown[e.key] = true;
-                    sendAction(keyMap[e.key], getPWM());
-                }
-            } else if (keyMap[combo]) {
-                if (!keyDown[combo]) {
-                    keyDown[combo] = true;
-                    sendAction(keyMap[combo], getPWM());
-                }
-            }
-            if (e.key === ' ') sendStop();
-        });
-        document.addEventListener('keyup', function(e) {
-            if (keyMap[e.key]) {
-                keyDown[e.key] = false;
-                sendStop();
-            } else if (combo && keyMap[combo]) {
-                keyDown[combo] = false;
-                sendStop();
-                combo = '';
-            }
-        });
-        function resetAllChannels() {
-            fetch('/api/servo/reset', {method: 'POST'})
-                .then(res => res.json())
-                .then(data => document.getElementById('servo-status').innerText = data.message)
-                .catch(err => alert('Error: ' + err));
-        }
-        function setServoAngle() {
-            const channel = document.getElementById('servo-channel').value;
-            const angle = document.getElementById('servo-angle').value;
-            fetch('/api/servo/set_angle', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ channel: parseInt(channel), angle: parseInt(angle) })
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.status === 'success') {
-                    document.getElementById('servo-status').innerText = `Channel ${data.channel} set to angle ${data.angle}`;
-                } else {
-                    document.getElementById('servo-status').innerText = data.message || 'Error setting angle';
-                }
-            })
-            .catch(err => {
-                document.getElementById('servo-status').innerText = 'Error: ' + err;
-            });
-        }
-    </script>
-</body>
-</html> 
+# For YOLOv8 (assume ultralytics is installed)
+try:
+    from ultralytics import YOLO
+except ImportError:
+    YOLO = None
+
+# Global variables for hardware instances
+_i2c = None
+_tca = None
+_r_en1 = None
+_l_en1 = None
+_r_en2 = None
+_l_en2 = None
+_back_sensor = None
+_front_sensor = None
+_adc = None
+_temp_sensor_initialized = False
+
+# Constants for pH sensor
+PH_7_VOLTAGE = 2.50
+PH_SLOPE = -5.7
+
+# Constants for DO sensor
+GAIN = 1
+VREF = 5000
+ADC_RES = 32767
+CAL1_V = 131
+CAL1_T = 25
+DO_Table = [
+    14460, 14220, 13820, 13440, 13090, 12740, 12420, 12110, 11810, 11530,
+    11260, 11010, 10770, 10530, 10300, 10080, 9860, 9660, 9460, 9270,
+    9080, 8900, 8730, 8570, 8410, 8250, 8110, 7960, 7820, 7690,
+    7560, 7430, 7300, 7180, 7070, 6950, 6840, 6730, 6630, 6530, 6410
+]
+READ_TEMP = 25
+
+# --- GPS Integration ---
+_gps_serial = None
+_gps_queue = queue.Queue()
+_gps_thread = None
+_gps_latest = None
+_latest_gps = None
+
+# Shared hardware resources
+_ads = None
+_ads_lock = threading.Lock()
+
+_temp_sensor_lock = threading.Lock()
+
+servo_config = {
+    9: {"min": 20, "max": 70, "init": 70, "delay": 0.03},
+    10: {"min": 15, "max": 100, "init": 100, "delay": 0.08},
+    11: {"min": 0, "max": 10, "init": 0, "delay": 0.1},
+}
+
+_pca_lock = threading.Lock()
+_pca = None
+_i2c_singleton = None
+_tca_singleton = None
+
+def get_pca9685():
+    global _pca, _i2c_singleton, _tca_singleton
+    if _pca is None:
+        if _i2c_singleton is None:
+            _i2c_singleton = busio.I2C(SCL, SDA)
+        if _tca_singleton is None:
+            _tca_singleton = TCA9548A(_i2c_singleton)
+        _pca = PCA9685(_tca_singleton[0])
+        _pca.frequency = 50
+        reset_all_channels(_pca)
+    return _pca
+
+def set_servo_angle(channel, angle):
+    with _pca_lock:
+        pca = get_pca9685()
+        if channel not in servo_config:
+            raise ValueError(f"Channel {channel} not allowed for servo control.")
+        cfg = servo_config[channel]
+        clamped = max(cfg["min"], min(angle, cfg["max"]))
+        pulse_length_us = 500 + (clamped / 180) * 2000  # 500-2500us
+        duty_cycle = int((pulse_length_us / 20000) * 65535)
+        pca.channels[channel].duty_cycle = duty_cycle
+        return clamped
+
+def _gps_reader():
+    """Background thread to read GPS data from ESP32"""
+    global _latest_gps
+    current_data = {}
+    
+    while True:
+        try:
+            ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=1)
+            # print("[INFO] Connected to ESP32 GPS")
+            
+            while True:
+                try:
+                    line = ser.readline().decode('utf-8').strip()
+                    if line:
+                        # print(f"[DEBUG] ESP32 says: {line}")
+                        if line.startswith("Latitude:"):
+                            try:
+                                lat = float(line.split("Latitude:")[1].strip())
+                                current_data['lat'] = lat
+                            except ValueError as e:
+                                # print(f"[ERROR] Failed to parse latitude: {e}")
+                                pass
+                        elif line.startswith("Longitude:"):
+                            try:
+                                lng = float(line.split("Longitude:")[1].strip())
+                                current_data['lng'] = lng
+                            except ValueError as e:
+                                # print(f"[ERROR] Failed to parse longitude: {e}")
+                                pass
+                        elif line.startswith("Date:"):
+                            current_data['date'] = line.split("Date:")[1].strip()
+                        elif line.startswith("Time:"):
+                            current_data['time'] = line.split("Time:")[1].strip()
+                        elif line.startswith("-----------------------"):
+                            if 'lat' in current_data and 'lng' in current_data:
+                                if 4.6431 <= current_data['lat'] <= 21.1205 and 116.9549 <= current_data['lng'] <= 126.5995:
+                                    _latest_gps = {
+                                        'lat': current_data['lat'],
+                                        'lng': current_data['lng'],
+                                        'date': current_data.get('date'),
+                                        'time': current_data.get('time'),
+                                        'raw': f"Lat: {current_data['lat']}, Lng: {current_data['lng']}, Date: {current_data.get('date')}, Time: {current_data.get('time')}",
+                                        'timestamp': datetime.datetime.now().isoformat()
+                                    }
+                                    # print(f"[INFO] GPS Update - Lat: {current_data['lat']}, Lng: {current_data['lng']}, Date: {current_data.get('date')}, Time: {current_data.get('time')}")
+                                else:
+                                    # print(f"[WARNING] GPS coordinates outside Philippines bounds: {current_data['lat']}, {current_data['lng']}")
+                                    pass
+                            current_data = {}
+                except serial.SerialException as e:
+                    # print(f"[ERROR] GPS Serial read error: {e}")
+                    break
+        except serial.SerialException as e:
+            # print(f"[ERROR] GPS Serial connection failed: {e}")
+            time.sleep(5)
+        except Exception as e:
+            # print(f"[ERROR] GPS Thread error: {e}")
+            time.sleep(5)
+        finally:
+            try:
+                ser.close()
+            except:
+                pass
+
+def start_gps_thread():
+    global _gps_thread
+    if _gps_thread is None or not _gps_thread.is_alive():
+        _gps_thread = threading.Thread(target=_gps_reader, daemon=True)
+        _gps_thread.start()
+
+def parse_nmea(nmea):
+    # Minimal NMEA parser for GPRMC or GPGGA
+    try:
+        parts = nmea.split(',')
+        if nmea.startswith('$GPRMC') and parts[3] and parts[5]:
+            lat = float(parts[3][:2]) + float(parts[3][2:])/60.0
+            if parts[4] == 'S': lat = -lat
+            lng = float(parts[5][:3]) + float(parts[5][3:])/60.0
+            if parts[6] == 'W': lng = -lng
+            return {'lat': lat, 'lng': lng, 'raw': nmea}
+        elif nmea.startswith('$GPGGA') and parts[2] and parts[4]:
+            lat = float(parts[2][:2]) + float(parts[2][2:])/60.0
+            if parts[3] == 'S': lat = -lat
+            lng = float(parts[4][:3]) + float(parts[4][3:])/60.0
+            if parts[5] == 'W': lng = -lng
+            return {'lat': lat, 'lng': lng, 'raw': nmea}
+    except Exception:
+        pass
+    return {'lat': None, 'lng': None, 'raw': nmea}
+
+def get_latest_gps():
+    start_gps_thread()
+    global _latest_gps
+    if _latest_gps:
+        return _latest_gps
+    return {'lat': None, 'lng': None, 'date': None, 'time': None, 'raw': None}
+
+# === Ultrasonic Sensor Readings ===
+def get_ultrasonic():
+    initialize_hardware()
+    try:
+        front = _front_sensor.distance if _front_sensor else None
+        back = _back_sensor.distance if _back_sensor else None
+        return {'front': front, 'back': back}
+    except Exception as e:
+        return {'front': None, 'back': None, 'error': str(e)}
+
+# === Camera + YOLOv8 Object Detection ===
+_yolo_model = None
+_camera = None
+
+def get_camera():
+    global _camera
+    if PiCamera is None:
+        print("[INFO] PiCamera not available on this system.")
+        return None
+    if _camera is None:
+        _camera = PiCamera()
+    return _camera
+
+def run_yolo_inference():
+    global _yolo_model
+    if YOLO is None:
+        return {'error': 'YOLOv8 not installed'}
+    cam = get_camera()
+    if cam is None:
+        return {'error': 'PiCamera not available'}
+    if _yolo_model is None:
+        _yolo_model = YOLO('yolov8n.pt')  # Use nano model for speed
+    # Capture image to a temporary file
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix='.jpg') as tmp:
+        cam.capture(tmp.name)
+        results = _yolo_model(tmp.name)
+        # Return detected objects (labels and confidences)
+        objects = []
+        for r in results:
+            for box in r.boxes:
+                cls = int(box.cls[0])
+                conf = float(box.conf[0])
+                objects.append({'class': cls, 'confidence': conf})
+        return {'objects': objects}
+
+def initialize_hardware():
+    global _i2c, _tca, _r_en1, _l_en1, _r_en2, _l_en2, _back_sensor, _front_sensor, _adc, _temp_sensor_initialized
+    
+    if _i2c is None:
+        # === Motor Enable Pins ===
+        _r_en1 = OutputDevice(17)
+        _l_en1 = OutputDevice(27)
+        _r_en2 = OutputDevice(23)
+        _l_en2 = OutputDevice(24)
+
+        _r_en1.on()
+        _l_en1.on()
+        _r_en2.on()
+        _l_en2.on()
+
+        # === I2C Setup ===
+        _i2c = busio.I2C(SCL, SDA)
+
+        # === TCA9548A Multiplexer Setup ===
+        _tca = TCA9548A(_i2c)
+
+        # === Ultrasonic Sensors ===
+        _back_sensor = DistanceSensor(echo=19, trigger=13, max_distance=4)
+        _front_sensor = DistanceSensor(echo=6, trigger=5, max_distance=4)
+
+        # === DO Sensor Setup ===
+        try:
+            _adc = Adafruit_ADS1x15.ADS1115(busnum=1)
+        except Exception as e:
+            print(f"[WARN] DO sensor not available: {e}")
+            _adc = None
+
+        # === Temperature Sensor Setup ===
+        try:
+            if not _temp_sensor_initialized:
+                # Check if modules are already loaded
+                if not os.path.exists('/sys/bus/w1/devices'):
+                    print("[INFO] Temperature sensor modules not loaded, using default temperature")
+                else:
+                    _temp_sensor_initialized = True
+        except Exception as e:
+            print(f"[WARN] Temperature sensor setup error: {e}")
+
+def select_tca_channel(channel):
+    if _i2c is None:
+        initialize_hardware()
+    _i2c.writeto(0x70, bytes([1 << channel]))
+
+# === PCA9685 Setup ===
+def reset_all_channels(pca):
+    for ch in range(16):
+        pca.channels[ch].duty_cycle = 0
+
+def setup_pca9685(channel):
+    if _i2c is None:
+        initialize_hardware()
+    select_tca_channel(channel)
+    pca = PCA9685(_i2c)
+    pca.frequency = 1000
+    reset_all_channels(pca)
+    return pca
+
+# === PWM Control ===
+def set_pwm(pca, channel, duty):
+    pca.channels[channel].duty_cycle = duty
+
+def move_forward(pca, pwm):
+    set_pwm(pca, 0, pwm)  # Left backward
+    set_pwm(pca, 1, 0)    # Left forward off
+    set_pwm(pca, 2, 0)    # Right forward off
+    set_pwm(pca, 3, pwm)  # Right backward
+
+def move_backward(pca, pwm):
+    set_pwm(pca, 0, 0)    # Left backward off
+    set_pwm(pca, 1, pwm)  # Left forward
+    set_pwm(pca, 2, pwm)  # Right forward
+    set_pwm(pca, 3, 0)    # Right backward off
+
+def stop_motors(pca):
+    for ch in range(4):
+        set_pwm(pca, ch, 0)
+
+def rotate_left(pca, pwm):
+    set_pwm(pca, 0, pwm)  # Left backward
+    set_pwm(pca, 1, 0)
+    set_pwm(pca, 2, pwm)  # Right forward
+    set_pwm(pca, 3, 0)
+
+def rotate_right(pca, pwm):
+    set_pwm(pca, 0, 0)
+    set_pwm(pca, 1, pwm)  # Left forward
+    set_pwm(pca, 2, 0)
+    set_pwm(pca, 3, pwm)  # Right backward
+
+def move_northwest(pca, pwm):
+    set_pwm(pca, 0, int(pwm / 4))  # Left backward low
+    set_pwm(pca, 1, 0)
+    set_pwm(pca, 2, 0)
+    set_pwm(pca, 3, pwm)           # Right backward
+
+def move_northeast(pca, pwm):
+    set_pwm(pca, 0, pwm)           # Left backward
+    set_pwm(pca, 1, 0)
+    set_pwm(pca, 2, 0)
+    set_pwm(pca, 3, int(pwm / 4))  # Right backward low
+
+def move_southwest(pca, pwm):
+    set_pwm(pca, 0, 0)
+    set_pwm(pca, 1, int(pwm / 4))  # Left forward low
+    set_pwm(pca, 2, pwm)           # Right forward
+    set_pwm(pca, 3, 0)
+
+def move_southeast(pca, pwm):
+    set_pwm(pca, 0, 0)
+    set_pwm(pca, 1, pwm)           # Left forward
+    set_pwm(pca, 2, int(pwm / 4))  # Right forward low
+    set_pwm(pca, 3, 0)
+
+# === pH Sensor ===
+def read_ph():
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    with _ads_lock:
+        channel = AnalogIn(_ads, 2)  # ADS.P2
+        voltage = channel.voltage
+        pH_Value = (voltage - 2.5) * 3.5 + 7.0
+        return {'ph': pH_Value, 'voltage': voltage}
+
+# === DO Sensor ===
+def read_do():
+    import smbus
+    import Adafruit_ADS1x15
+    TCA_ADDRESS = 0x70
+    TCA_CHANNEL = 1
+    ADS_CHANNEL = 1  # A1/P1
+    GAIN = 1
+    VREF = 5000
+    ADC_RES = 32767
+
+    try:
+        i2c_bus = smbus.SMBus(1)
+        adc = Adafruit_ADS1x15.ADS1115(busnum=1)
+
+        # Re-select TCA channel 1 before each read
+        i2c_bus.write_byte(TCA_ADDRESS, 1 << TCA_CHANNEL)
+
+        raw = adc.read_adc(ADS_CHANNEL, gain=GAIN)
+        voltage = (raw / ADC_RES) * VREF  # Convert to millivolts
+
+        print(f"[DEBUG] DO P1 -> Raw ADC: {raw} | Voltage: {voltage:.2f} mV")
+        return {'do': voltage, 'voltage': voltage, 'raw': raw}
+    except OSError as e:
+        print("[ERROR] I2C communication error. Check wiring and channel selection.")
+        print(e)
+        return {'do': None, 'voltage': None, 'error': str(e)}
+    except Exception as e:
+        print(f"[WARN] DO sensor error: {e}")
+        return {'do': None, 'voltage': None, 'error': str(e)}
+
+# === Turbidity Sensor ===
+latest_turbidity = None
+
+def turbidity_reader():
+    global latest_turbidity
+    while True:
+        try:
+            voltage = read_turbidity()
+            latest_turbidity = voltage
+            print(voltage)
+        except Exception as e:
+            latest_turbidity = None
+            print(f"Error reading turbidity: {str(e)}")
+        import time; time.sleep(1)
+
+def start_turbidity_thread():
+    if not hasattr(start_turbidity_thread, "started"):
+        threading.Thread(target=turbidity_reader, daemon=True).start()
+        start_turbidity_thread.started = True
+
+def get_latest_turbidity():
+    start_turbidity_thread()
+    return latest_turbidity
+
+# === Temperature Sensor ===
+def read_temp():
+    try:
+        with _temp_sensor_lock:
+            device_folders = glob.glob('/sys/bus/w1/devices/28*')
+            if not device_folders:
+                return {'temp': None, 'error': 'No sensor found'}
+            device_file = device_folders[0] + '/w1_slave'
+            with open(device_file, 'r') as f:
+                lines = f.readlines()
+            if len(lines) < 2 or 'YES' not in lines[0]:
+                return {'temp': None, 'error': 'Invalid sensor response'}
+            temp_output = lines[1].find('t=')
+            if temp_output == -1:
+                return {'temp': None, 'error': 'Temperature data not found'}
+            temp_string = lines[1][temp_output+2:]
+            temp_c = float(temp_string) / 1000.0
+            if -55 <= temp_c <= 125:
+                return {'temp': temp_c}
+            else:
+                return {'temp': None, 'error': 'Temperature out of valid range'}
+    except Exception as e:
+        return {'temp': None, 'error': str(e)}
+
+# === Cleanup Function ===
+def cleanup(pca):
+    stop_motors(pca)
+    pca.deinit()
+    if _r_en1: _r_en1.off()
+    if _l_en1: _l_en1.off()
+    if _r_en2: _r_en2.off()
+    if _l_en2: _l_en2.off()
+
+# Initialize I2C, TCA9548A, and ADS1115 only once
+def initialize_ads():
+    global _i2c, _tca, _ads
+    if _i2c is None or _tca is None or _ads is None:
+        import board, busio
+        import adafruit_ads1x15.ads1115 as ADS
+        from adafruit_tca9548a import TCA9548A
+        _i2c = busio.I2C(board.SCL, board.SDA)
+        _tca = TCA9548A(_i2c)
+        ads_i2c = _tca[1]
+        _ads = ADS.ADS1115(ads_i2c)
+
+# Helper to select multiplexer channel
+def select_ads_channel(channel):
+    initialize_ads()
+    with _ads_lock:
+        # Select channel 1 on the TCA9548A (where ADS1115 is connected)
+        ads_i2c = _tca[1]
+        # Re-initialize ADS1115 for each read to ensure correct channel
+        from adafruit_ads1x15 import ads1115 as ADS
+        _ads = ADS.ADS1115(ads_i2c)
+        from adafruit_ads1x15.analog_in import AnalogIn
+        return AnalogIn(_ads, channel)
+
+# Turbidity (A0)
+def read_turbidity():
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    with _ads_lock:
+        channel = AnalogIn(_ads, 0)  # ADS.P0
+        voltage = channel.voltage
+        return voltage
+
+# pH Level (A2)
+def read_ph():
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    with _ads_lock:
+        channel = AnalogIn(_ads, 2)  # ADS.P2
+        voltage = channel.voltage
+        pH_Value = (voltage - 2.5) * 3.5 + 7.0
+        return {'ph': pH_Value, 'voltage': voltage}
+
+# Water Level (A3)
+def read_water_level():
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    with _ads_lock:
+        channel = AnalogIn(_ads, 3)  # ADS.P3
+        voltage = channel.voltage
+        return channel.value, voltage 
