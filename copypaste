@@ -170,7 +170,9 @@
         function getPWM() { return parseInt(pwmSlider.value); }
 
         // --- Real-Time Button Control ---
-        function sendAction(action, pwm) {
+        async function sendAction(action, pwm) {
+            // Ensure we're in motor mode before sending motor commands
+            await setMode('motor');
             fetch('/manual_control', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -236,7 +238,9 @@
                 .then(data => document.getElementById('servo-status').innerText = data.message)
                 .catch(err => alert('Error: ' + err));
         }
-        function setServoAngle() {
+        async function setServoAngle() {
+            // Ensure we're in servo mode before setting angle
+            await setMode('servo');
             const channel = document.getElementById('servo-channel').value;
             const angle = document.getElementById('servo-angle').value;
             fetch('/api/servo/set_angle', {
@@ -263,24 +267,25 @@
                     document.getElementById('current-mode').innerText = data.mode;
                 });
         }
-        function setMode(mode) {
-            fetch('/api/pca_mode', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ mode })
-            })
-            .then(res => res.json())
-            .then(data => {
+        async function setMode(mode) {
+            try {
+                const res = await fetch('/api/pca_mode', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode })
+                });
+                const data = await res.json();
                 if (data.status === 'success') {
                     document.getElementById('mode-status').innerText = `Mode set to ${data.mode}`;
                     document.getElementById('current-mode').innerText = data.mode;
                 } else {
                     document.getElementById('mode-status').innerText = data.message || 'Error setting mode';
                 }
-            })
-            .catch(err => {
+                return data;
+            } catch (err) {
                 document.getElementById('mode-status').innerText = 'Error: ' + err;
-            });
+                throw err;
+            }
         }
         // On page load, show current mode
         updateCurrentMode();
