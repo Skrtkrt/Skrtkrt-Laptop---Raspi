@@ -733,6 +733,21 @@ def manual_control():
 def control():
     return render_template('control.html')
 
+@app.route('/reset_channels', methods=['POST'])
+def reset_channels():
+    from adafruit_pca9685 import PCA9685
+    from adafruit_tca9548a import TCA9548A
+    import busio
+    from board import SCL, SDA
+
+    i2c = busio.I2C(SCL, SDA)
+    tca = TCA9548A(i2c)
+    pca = PCA9685(tca[0])
+    for ch in range(16):
+        pca.channels[ch].duty_cycle = 0
+    pca.deinit()
+    return jsonify({'status': 'ok'})
+
 if __name__ == '__main__':
     try:
         import eventlet
