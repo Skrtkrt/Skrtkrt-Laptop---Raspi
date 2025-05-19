@@ -264,12 +264,12 @@ def clean_pca_channels(pca):
     for ch in range(16):
         pca.channels[ch].duty_cycle = 0
 
-def setup_pca9685(channel=0):
+def setup_pca9685(channel=0, frequency=1000):
     i2c = busio.I2C(SCL, SDA)
     tca = TCA9548A(i2c)
     pca_i2c = tca[channel]
     pca = PCA9685(pca_i2c)
-    pca.frequency = 50
+    pca.frequency = frequency
     clean_pca_channels(pca)
     return pca
 
