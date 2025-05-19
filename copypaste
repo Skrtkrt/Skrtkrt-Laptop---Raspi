@@ -1,3 +1,4 @@
+
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 from flask_socketio import SocketIO, emit
 import os
@@ -756,22 +757,6 @@ def api_servo_set_angle():
         return jsonify({'status': 'success', 'channel': channel, 'angle': set_angle})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
-
-@app.route('/api/pca_mode', methods=['POST'])
-def api_set_pca_mode():
-    try:
-        data = request.get_json()
-        mode = data.get('mode')
-        from app import hardware
-        hardware.set_pca_mode(mode)
-        return jsonify({'status': 'success', 'mode': hardware.get_pca_mode()})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 400
-
-@app.route('/api/pca_mode', methods=['GET'])
-def api_get_pca_mode():
-    from app import hardware
-    return jsonify({'mode': hardware.get_pca_mode()})
 
 if __name__ == '__main__':
     try:
