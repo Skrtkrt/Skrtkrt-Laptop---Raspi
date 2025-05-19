@@ -68,51 +68,6 @@ _ads_lock = threading.Lock()
 
 _temp_sensor_lock = threading.Lock()
 
-servo_config = {
-    9: {"min": 20, "max": 70, "init": 70, "delay": 0.03},
-    10: {"min": 15, "max": 100, "init": 100, "delay": 0.08},
-    11: {"min": 0, "max": 10, "init": 0, "delay": 0.1},
-}
-
-_pca_lock = threading.Lock()
-_pca = None
-_i2c_singleton = None
-_tca_singleton = None
-
-_pca_mode = 'servo'  # Default mode
-
-def get_pca9685():
-    global _pca, _i2c_singleton, _tca_singleton, _pca_mode
-    if _pca is None:
-        if _i2c_singleton is None:
-            _i2c_singleton = busio.I2C(SCL, SDA)
-        if _tca_singleton is None:
-            _tca_singleton = TCA9548A(_i2c_singleton)
-        _pca = PCA9685(_tca_singleton[0])
-        # Set initial mode to servo
-        _pca_mode = 'servo'
-        _pca.frequency = 50
-        reset_all_channels(_pca)
-    # Ensure frequency matches current mode
-    if _pca_mode == 'servo' and _pca.frequency != 50:
-        _pca.frequency = 50
-    elif _pca_mode == 'motor' and _pca.frequency != 1000:
-        _pca.frequency = 1000
-    return _pca
-
-def set_servo_angle(channel, angle):
-    with _pca_lock:
-        pca = get_pca9685()
-        pca.frequency = 50  # Always set before using servos!
-        if channel not in servo_config:
-            raise ValueError(f"Channel {channel} not allowed for servo control.")
-        cfg = servo_config[channel]
-        clamped = max(cfg["min"], min(angle, cfg["max"]))
-        pulse_length_us = 500 + (clamped / 180) * 2000  # 500-2500us
-        duty_cycle = int((pulse_length_us / 20000) * 65535)
-        pca.channels[channel].duty_cycle = duty_cycle
-        return clamped
-
 def _gps_reader():
     """Background thread to read GPS data from ESP32"""
     global _latest_gps
@@ -305,92 +260,69 @@ def select_tca_channel(channel):
     _i2c.writeto(0x70, bytes([1 << channel]))
 
 # === PCA9685 Setup ===
-def reset_all_channels(pca):
-    for ch in range(16):
-        pca.channels[ch].duty_cycle = 0
-
 def setup_pca9685(channel):
     if _i2c is None:
         initialize_hardware()
     select_tca_channel(channel)
     pca = PCA9685(_i2c)
     pca.frequency = 1000
-    reset_all_channels(pca)
     return pca
 
 # === PWM Control ===
 def set_pwm(pca, channel, duty):
     pca.channels[channel].duty_cycle = duty
 
-def move_forward(pwm):
-    with _pca_lock:
-        pca = get_pca9685()
-        set_pwm(pca, 0, pwm)
-        set_pwm(pca, 1, 0)
-        set_pwm(pca, 2, 0)
-        set_pwm(pca, 3, pwm)
+def move_forward(pca, pwm):
+    set_pwm(pca, 0, pwm)  # Left backward
+    set_pwm(pca, 1, 0)    # Left forward off
+    set_pwm(pca, 2, 0)    # Right forward off
+    set_pwm(pca, 3, pwm)  # Right backward
 
-def move_backward(pwm):
-    with _pca_lock:
-        pca = get_pca9685()
-        set_pwm(pca, 0, 0)
-        set_pwm(pca, 1, pwm)
-        set_pwm(pca, 2, pwm)
-        set_pwm(pca, 3, 0)
+def move_backward(pca, pwm):
+    set_pwm(pca, 0, 0)    # Left backward off
+    set_pwm(pca, 1, pwm)  # Left forward
+    set_pwm(pca, 2, pwm)  # Right forward
+    set_pwm(pca, 3, 0)    # Right backward off
 
-def stop_motors():
-    with _pca_lock:
-        pca = get_pca9685()
-        for ch in range(4):
-            set_pwm(pca, ch, 0)
+def stop_motors(pca):
+    for ch in range(4):
+        set_pwm(pca, ch, 0)
 
-def rotate_left(pwm):
-    with _pca_lock:
-        pca = get_pca9685()
-        set_pwm(pca, 0, pwm)
-        set_pwm(pca, 1, 0)
-        set_pwm(pca, 2, pwm)
-        set_pwm(pca, 3, 0)
+def rotate_left(pca, pwm):
+    set_pwm(pca, 0, pwm)  # Left backward
+    set_pwm(pca, 1, 0)
+    set_pwm(pca, 2, pwm)  # Right forward
+    set_pwm(pca, 3, 0)
 
-def rotate_right(pwm):
-    with _pca_lock:
-        pca = get_pca9685()
-        set_pwm(pca, 0, 0)
-        set_pwm(pca, 1, pwm)
-        set_pwm(pca, 2, 0)
-        set_pwm(pca, 3, pwm)
+def rotate_right(pca, pwm):
+    set_pwm(pca, 0, 0)
+    set_pwm(pca, 1, pwm)  # Left forward
+    set_pwm(pca, 2, 0)
+    set_pwm(pca, 3, pwm)  # Right backward
 
-def move_northwest(pwm):
-    with _pca_lock:
-        pca = get_pca9685()
-        set_pwm(pca, 0, int(pwm / 4))
-        set_pwm(pca, 1, 0)
-        set_pwm(pca, 2, 0)
-        set_pwm(pca, 3, pwm)
+def move_northwest(pca, pwm):
+    set_pwm(pca, 0, int(pwm / 4))  # Left backward low
+    set_pwm(pca, 1, 0)
+    set_pwm(pca, 2, 0)
+    set_pwm(pca, 3, pwm)           # Right backward
 
-def move_northeast(pwm):
-    with _pca_lock:
-        pca = get_pca9685()
-        set_pwm(pca, 0, pwm)
-        set_pwm(pca, 1, 0)
-        set_pwm(pca, 2, 0)
-        set_pwm(pca, 3, int(pwm / 4))
+def move_northeast(pca, pwm):
+    set_pwm(pca, 0, pwm)           # Left backward
+    set_pwm(pca, 1, 0)
+    set_pwm(pca, 2, 0)
+    set_pwm(pca, 3, int(pwm / 4))  # Right backward low
 
-def move_southwest(pwm):
-    with _pca_lock:
-        pca = get_pca9685()
-        set_pwm(pca, 0, 0)
-        set_pwm(pca, 1, int(pwm / 4))
-        set_pwm(pca, 2, pwm)
-        set_pwm(pca, 3, 0)
+def move_southwest(pca, pwm):
+    set_pwm(pca, 0, 0)
+    set_pwm(pca, 1, int(pwm / 4))  # Left forward low
+    set_pwm(pca, 2, pwm)           # Right forward
+    set_pwm(pca, 3, 0)
 
-def move_southeast(pwm):
-    with _pca_lock:
-        pca = get_pca9685()
-        set_pwm(pca, 0, 0)
-        set_pwm(pca, 1, pwm)
-        set_pwm(pca, 2, int(pwm / 4))
-        set_pwm(pca, 3, 0)
+def move_southeast(pca, pwm):
+    set_pwm(pca, 0, 0)
+    set_pwm(pca, 1, pwm)           # Left forward
+    set_pwm(pca, 2, int(pwm / 4))  # Right forward low
+    set_pwm(pca, 3, 0)
 
 # === pH Sensor ===
 def read_ph():
@@ -483,7 +415,7 @@ def read_temp():
 
 # === Cleanup Function ===
 def cleanup(pca):
-    stop_motors()
+    stop_motors(pca)
     pca.deinit()
     if _r_en1: _r_en1.off()
     if _l_en1: _l_en1.off()
@@ -540,21 +472,4 @@ def read_water_level():
     with _ads_lock:
         channel = AnalogIn(_ads, 3)  # ADS.P3
         voltage = channel.voltage
-        return channel.value, voltage
-
-def set_pca_mode(mode):
-    global _pca_mode
-    with _pca_lock:
-        pca = get_pca9685()
-        if mode == 'servo':
-            pca.frequency = 50
-            _pca_mode = 'servo'
-        elif mode == 'motor':
-            pca.frequency = 1000
-            _pca_mode = 'motor'
-        else:
-            raise ValueError('Invalid mode. Use "servo" or "motor".')
-
-def get_pca_mode():
-    global _pca_mode
-    return _pca_mode 
+        return channel.value, voltage 
