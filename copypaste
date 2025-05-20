@@ -300,28 +300,50 @@
         );
 
         // Map layers (add your local tile server URLs when ready)
-        const streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        const streetLayer = L.tileLayer('http://localhost:8080/styles/basic/{z}/{x}/{y}.pbf', {
             maxZoom: 19,
             attribution: '© OpenStreetMap contributors'
         });
-        const satelliteLayer = L.tileLayer('https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
-            maxZoom: 19,
-            subdomains:['mt0','mt1','mt2','mt3'],
-            attribution: '© Google'
-        });
-        // Add more layers as needed
 
-        // Initialize map
+        // Add error handling for tile loading
+        streetLayer.on('tileerror', function(e) {
+            console.error('Tile loading error:', e);
+            // Show error message to user
+            const errorDiv = document.createElement('div');
+            errorDiv.style.position = 'fixed';
+            errorDiv.style.top = '100px';
+            errorDiv.style.left = '50%';
+            errorDiv.style.transform = 'translateX(-50%)';
+            errorDiv.style.background = '#ff4444';
+            errorDiv.style.color = 'white';
+            errorDiv.style.padding = '10px 20px';
+            errorDiv.style.borderRadius = '5px';
+            errorDiv.style.zIndex = '1000';
+            errorDiv.textContent = 'Map tiles are loading, please wait...';
+            document.body.appendChild(errorDiv);
+            
+            // Remove error message after 5 seconds
+            setTimeout(() => {
+                if (document.body.contains(errorDiv)) {
+                    document.body.removeChild(errorDiv);
+                }
+            }, 5000);
+        });
+
+        // Initialize map with both layers
         const map = L.map('map', {
             center: [15.0409, 120.6668], // Pampanga center
             zoom: 11,
             maxBounds: pampangaBounds,
             layers: [streetLayer]
         });
-        L.control.layers({
-            'Street': streetLayer,
-            'Satellite': satelliteLayer
-        }).addTo(map);
+
+        // Add error handling for tile loading
+        streetLayer.on('tileerror', function() {
+            console.log('Falling back to local tile server...');
+            map.removeLayer(streetLayer);
+            map.addLayer(fallbackLayer);
+        });
 
         function enterPointSettingMode(point) {
             pointSettingMode = true;
