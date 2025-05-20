@@ -752,8 +752,17 @@ def servo_control():
         data = request.get_json()
         channel = int(data.get('channel'))
         angle = int(data.get('angle'))
-        pca = hardware.setup_pca9685(channel=0, frequency=50)  # Always set 50Hz for servos
+        # 1. Reset all channels at 50Hz
+        pca = hardware.setup_pca9685(channel=0, frequency=50)
+        hardware.reset_all_channels(pca)
+        # 2. Move to requested angle
         clamped = hardware.set_servo_angle(pca, channel, angle)
+        time.sleep(0.5)
+        # 3. Move back to initial position
+        init_angle = hardware.servo_config[channel]["init"]
+        hardware.smooth_move(pca, channel, clamped, init_angle, hardware.servo_config[channel]["delay"])
+        # 4. Reset all channels again
+        hardware.reset_all_channels(pca)
         set_status('manual')
         return jsonify({'status': 'success', 'channel': channel, 'angle': clamped})
     except Exception as e:
