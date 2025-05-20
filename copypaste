@@ -4,11 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Maps - Larva Tracker</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='leaflet/leaflet.css') }}" />
-    <script src="{{ url_for('static', filename='leaflet/leaflet.js') }}"></script>
-    <script src="{{ url_for('static', filename='socket.io.js') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='leaflet/Control.Geocoder.css') }}" />
-    <script src="{{ url_for('static', filename='leaflet/Control.Geocoder.js') }}"></script>
+    <!-- Leaflet CSS & JS from CDN -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <!-- Optional: Geocoder plugin from CDN -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
+    <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/common.css') }}">
     
     <style>
