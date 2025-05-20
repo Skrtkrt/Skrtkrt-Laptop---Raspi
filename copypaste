@@ -298,28 +298,39 @@
             L.latLng(15.25, 120.95)  // Northeast
         );
 
-        // Map layers (add your local tile server URLs when ready)
-        const streetLayer = L.tileLayer('/static/map_tiles/{z}/{x}/{y}.png', {
+        // Map layers: try offline first, fallback to online if missing
+        const offlineLayer = L.tileLayer('/static/map_tiles/{z}/{x}/{y}.png', {
+            minZoom: 12,
             maxZoom: 19,
             attribution: 'Offline Map'
         });
-        // const satelliteLayer = L.tileLayer('https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
-        //     maxZoom: 19,
-        //     subdomains:['mt0','mt1','mt2','mt3'],
-        //     attribution: '© Google'
-        // });
-        // Add more layers as needed
+        const onlineLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            minZoom: 0,
+            maxZoom: 19,
+            attribution: 'Map data © OpenStreetMap contributors'
+        });
 
-        // Initialize map
+        // Initialize map with offline layer
         const map = L.map('map', {
             center: [15.0409, 120.6668], // Pampanga center
             zoom: 11,
             maxBounds: pampangaBounds,
-            layers: [streetLayer]
+            layers: [offlineLayer]
         });
+
+        // Fallback: if any offline tile fails, add the online layer
+        let onlineLayerAdded = false;
+        offlineLayer.on('tileerror', function(event) {
+            if (!onlineLayerAdded) {
+                map.addLayer(onlineLayer);
+                onlineLayerAdded = true;
+            }
+        });
+
+        // Optional: allow user to switch layers manually
         L.control.layers({
-            'Street': streetLayer,
-            // 'Satellite': satelliteLayer
+            'Offline': offlineLayer,
+            'Online': onlineLayer
         }).addTo(map);
 
         function enterPointSettingMode(point) {
