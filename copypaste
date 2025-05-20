@@ -14,6 +14,7 @@ import serial  # For UART GPS
 import threading
 import queue
 import datetime
+import lgpio
 try:
     from picamera import PiCamera
 except (ImportError, OSError):
@@ -67,6 +68,9 @@ _ads = None
 _ads_lock = threading.Lock()
 
 _temp_sensor_lock = threading.Lock()
+
+RELAY_PIN = 26
+_pump_gpio_handle = None
 
 def _gps_reader():
     """Background thread to read GPS data from ESP32"""
@@ -608,3 +612,20 @@ def perform_object_sequence(object_name):
     time.sleep(0.5)
     reset_all_channels(pca)  # Reset all 16 channels to 0
     pca.deinit() 
+
+def init_pump_gpio():
+    global _pump_gpio_handle
+    if _pump_gpio_handle is None:
+        _pump_gpio_handle = lgpio.gpiochip_open(0)
+        lgpio.gpio_claim_output(_pump_gpio_handle, RELAY_PIN)
+        lgpio.gpio_write(_pump_gpio_handle, RELAY_PIN, 1)  # Ensure OFF
+
+def pump_on():
+    init_pump_gpio()
+    lgpio.gpio_write(_pump_gpio_handle, RELAY_PIN, 0)
+    print("Water pump is ON")
+
+def pump_off():
+    init_pump_gpio()
+    lgpio.gpio_write(_pump_gpio_handle, RELAY_PIN, 1)
+    print("Water pump is OFF") 
