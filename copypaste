@@ -754,11 +754,15 @@ def servo_control():
         angle = int(data.get('angle'))
         # 1. Reset all channels at 50Hz
         pca = hardware.setup_pca9685(channel=0, frequency=50)
-        # 2. Move to requested angle smoothly
-        init_angle = hardware.servo_config[channel]["init"]
-        clamped = hardware.smooth_move(pca, channel, init_angle, angle, hardware.servo_config[channel]["delay"])
         hardware.reset_all_channels(pca)
+        # 2. Move to requested angle
+        clamped = hardware.set_servo_angle(pca, channel, angle)
         time.sleep(0.5)
+        # 3. Move back to initial position
+        init_angle = hardware.servo_config[channel]["init"]
+        hardware.smooth_move(pca, channel, clamped, init_angle, hardware.servo_config[channel]["delay"])
+        # 4. Reset all channels again
+        hardware.reset_all_channels(pca)
         set_status('manual')
         return jsonify({'status': 'success', 'channel': channel, 'angle': clamped})
     except Exception as e:
@@ -799,8 +803,8 @@ def automation_sequence():
             hardware.stop_motors(pca)
             # 2. Servo arm action (safe sequence)
             pca = hardware.setup_pca9685(channel=0, frequency=50)
-            hardware.smooth_move(pca, 9, 70, 20, hardware.servo_config[9]["delay"])
             hardware.reset_all_channels(pca)
+            hardware.smooth_move(pca, 9, 70, 20, hardware.servo_config[9]["delay"])
             time.sleep(1)
             hardware.smooth_move(pca, 9, 20, 70, hardware.servo_config[9]["delay"])
             hardware.reset_all_channels(pca)
@@ -810,6 +814,7 @@ def automation_sequence():
         pca = hardware.setup_pca9685(channel=0, frequency=1000)
         hardware.stop_motors(pca)
         pca = hardware.setup_pca9685(channel=0, frequency=50)
+        hardware.reset_all_channels(pca)
         set_status('idle')
         control_lock.release()
 
