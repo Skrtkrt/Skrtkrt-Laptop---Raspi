@@ -83,6 +83,7 @@ function initializeMap() {
         wheelPxPerZoomLevel: 60 // More natural zoom feel
     }).setView(pampangaCenter, 11);
 
+    // Use offline tiles
     L.tileLayer('/map_tiles/{z}/{x}/{y}.png').addTo(map);
 
     // Initialize points with circles
