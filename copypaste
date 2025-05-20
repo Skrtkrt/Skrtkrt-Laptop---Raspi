@@ -259,11 +259,9 @@
             })
             .then(response => response.json())
             .then(data => {
-                if(data.status === 'on') alert('Pump turned ON');
-                else if(data.status === 'off') alert('Pump turned OFF');
-                else alert('Pump error: ' + (data.message || 'Unknown error'));
+                // No alert or notification
             })
-            .catch(() => alert('Failed to control pump.'));
+            .catch(() => {/* No notification */});
         }
     </script>
 </body>
