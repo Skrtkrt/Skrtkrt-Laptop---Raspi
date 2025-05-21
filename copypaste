@@ -651,26 +651,26 @@ def move_channels_9_10_11(pca, targets):
         smooth_move(pca, 11, targets[11], servo_config[11]["delay"])
 
 def perform_object_sequence(object_name):
+    print(f'[DEBUG] === BEGIN perform_object_sequence for {object_name} ===')
     pca = setup_pca9685(channel=0, frequency=50)
     try:
-        print(f'[DEBUG] Starting perform_object_sequence for {object_name}')
-        # Step 1: Reset all servos to rest
+        print('[DEBUG] Step 1: Reset all servos to rest')
         move_channels_9_10_11(pca, rest_position)
         time.sleep(0.5)
-        # Step 2: Set frequency (already set above)
+        print('[DEBUG] Step 2: Set frequency to 50Hz')
         set_servo_freq(pca, 50)
-        # Step 3: Move to straight position
+        print('[DEBUG] Step 3: Move to straight position')
         move_channels(pca, straight_position)
         time.sleep(0.5)
-        # Step 4: Move to object position
+        print('[DEBUG] Step 4: Move to object position')
         if object_name in object_positions:
             move_channels_11_then_10(pca, object_positions[object_name])
         else:
-            print(f"Unknown object: {object_name}")
+            print(f"[ERROR] Unknown object: {object_name}")
             return
-        # Step 5: Hold
+        print('[DEBUG] Step 5: Hold at object position')
         time.sleep(2)
-        # --- Sensor check and pump logic ---
+        print('[DEBUG] Step 6: Sensor check and pump logic')
         criteria_met = False
         recorded_data = None
         try:
@@ -731,8 +731,10 @@ def perform_object_sequence(object_name):
                         'time': now.strftime('%H:%M:%S')
                     }
                     print('[DEBUG] Criteria met, will spray and save event')
+                else:
+                    print('[DEBUG] Criteria NOT met, will NOT spray or save event')
         except Exception as e:
-            print(f"[ERROR] Sensor read: {e}")
+            print(f"[ERROR] Sensor read (outer): {e}")
         if criteria_met:
             try:
                 print('[DEBUG] Pump ON')
@@ -759,6 +761,7 @@ def perform_object_sequence(object_name):
         reset_all_channels(pca)  # Reset all 16 channels to 0 (servos will lose holding torque)
         print('[DEBUG] Arm cleanup: deinit PCA9685')
         pca.deinit()
+    print(f'[DEBUG] === END perform_object_sequence for {object_name} ===')
 
 def init_pump_gpio():
     global _pump_gpio_handle
