@@ -1,55 +1,38 @@
-{% extends 'base.html' %}
-
-{% block content %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Notifications - Larva Tracker</title>
+    <title>Manual Control - Larva Tracker</title>
+    <link rel="stylesheet" href="/static/css/style.css">
     <style>
         body {
             margin: 0;
-            padding: 0;
+            background: #f5f5f5;
             font-family: Arial, sans-serif;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            background: white;
         }
-
-        /* Header and Logo Animation Styles */
         .header {
             display: flex;
-            justify-content: space-between;
             align-items: center;
-            padding: 20px 40px;
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            background: white;
-            z-index: 100;
+            justify-content: space-between;
+            background: #fff;
+            padding: 10px 40px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
         }
-
         .logo {
             width: 80px;
             height: auto;
             cursor: pointer;
-            transition: transform 0.3s ease;
             animation: logoSway 2s infinite ease-in-out;
         }
-
         .logo:hover {
             animation: logoWiggle 0.5s infinite;
         }
-
         @keyframes logoSway {
             0% { transform: rotate(-5deg); }
             50% { transform: rotate(5deg); }
             100% { transform: rotate(-5deg); }
         }
-
         @keyframes logoWiggle {
             0% { transform: rotate(-8deg); }
             25% { transform: rotate(8deg); }
@@ -57,359 +40,229 @@
             75% { transform: rotate(8deg); }
             100% { transform: rotate(-8deg); }
         }
-
-        /* Navigation Styles */
         .nav-menu {
             display: flex;
             gap: 20px;
             align-items: center;
         }
-
         .nav-menu a {
             text-decoration: none;
             color: #666;
             font-size: 18px;
-            transition: color 0.3s ease;
         }
-
         .nav-menu a.active {
             color: black;
             font-weight: bold;
         }
-
         .nav-menu span {
             color: #666;
         }
-
-        /* Notifications Content Styles */
-        .notifications-container {
-            padding: 100px 40px 80px;
-            flex: 1;
+        .dpad-container {
             display: flex;
             flex-direction: column;
-            gap: 20px;
-            max-width: 1200px;
-            margin: 0 auto;
-            width: 100%;
-        }
-
-        .notification-card {
-            background-color: #BFBFBF;
-            padding: 20px;
-            border-radius: 4px;
-        }
-
-        .notification-title {
-            font-size: 20px;
-            margin-bottom: 20px;
-        }
-
-        .notification-content {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
-
-        .detail-column {
-            display: flex;
-            flex-direction: column;
-            gap: 15px;
-        }
-
-        .detail-item {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-
-        .detail-label {
-            font-weight: bold;
-        }
-
-        .detail-value {
-            color: #666;
-            font-style: italic;
-        }
-
-        /* Footer Styles */
-        .footer {
-            background-color: #BFBFBF;
-            padding: 20px;
-            display: flex;
-            gap: 40px;
             align-items: center;
-            justify-content: flex-start;
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            z-index: 100;
+            justify-content: center;
+            min-height: 60vh;
+            margin-top: 32px;
         }
-
-        .battery-indicator {
-            width: 50px;
-            height: 25px;
-            background-color: #00FF00;
-            border: 2px solid #333;
-            border-radius: 3px;
-            position: relative;
+        .dpad-btn {
+            width: 100px;
+            height: 100px;
+            font-size: 3rem;
+            background: #111;
+            color: #fff;
+            border: none;
+            border-radius: 18px;
+            margin: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
         }
-
-        .battery-indicator::after {
-            content: '';
-            position: absolute;
-            right: -6px;
-            top: 50%;
-            transform: translateY(-50%);
-            width: 4px;
-            height: 10px;
-            background-color: #333;
-            border-radius: 0 2px 2px 0;
+        .dpad-btn:active {
+            background: #007bff;
+            transform: scale(0.97);
         }
-
-        .water-tank {
-            width: 30px;
-            height: 40px;
-            border: 2px solid #333;
-            border-radius: 5px;
-            background-color: #00FF00;
-            position: relative;
+        .dpad-middle-row {
             display: flex;
-            align-items: flex-end;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
         }
-
-        .water-tank::before {
-            content: '';
-            position: absolute;
-            top: -8px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 16px;
-            height: 8px;
-            background-color: #333;
-            border-radius: 3px 3px 0 0;
+        .dpad-center {
+            width: 100px;
+            height: 100px;
         }
-
-        @media (max-width: 768px) {
-            .header {
-                flex-direction: column;
-                gap: 20px;
-                padding: 20px;
-            }
-
-            .nav-menu {
-                flex-wrap: wrap;
-                justify-content: center;
-            }
-
-            .notifications-container {
-                padding: 20px;
-            }
-
-            .notification-content {
-                grid-template-columns: 1fr;
-            }
+        .dpad-diagonal-row {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+        }
+        @media (max-width: 600px) {
+            .dpad-btn, .dpad-center { width: 60px; height: 60px; font-size: 1.5rem; }
         }
     </style>
 </head>
 <body>
     <div class="header">
-        <img src="{{ url_for('static', filename='images/larva logo.png') }}" alt="Logo" class="logo" onclick="window.location.href='/maps'">
-        <nav class="nav-menu">
+        <img src="/static/images/larva logo.png" alt="Logo" class="logo" onclick="window.location.href='/maps'">
+        <div class="nav-menu">
             <a href="/main">HOME</a>
             <span>|</span>
-            <a href="/maps">MAPS</a>
+            <a href="/maps" class="active">MAPS</a>
             <span>|</span>
             <a href="/schedules">SCHEDULES</a>
             <span>|</span>
-            <a href="/notifications" class="active">NOTIFICATIONS</a>
+            <a href="/notifications">NOTIFICATIONS</a>
             <span>|</span>
-            <a href="/error-logs">ERROR LOGS</a>
-        </nav>
-    </div>
-
-    <div class="notifications-container">
-        <div class="notification-card">
-            <h2 class="notification-title">Breeding Site Detection</h2>
-            <div class="notification-content">
-                <div class="detail-column">
-                    <div class="detail-item">
-                        <span class="detail-label">pH:</span>
-                        <span class="detail-value" id="phValue">...</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">DO:</span>
-                        <span class="detail-value" id="doValue">...</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">Turbidity:</span>
-                        <span class="detail-value" id="turbidityValue">...</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">Temperature:</span>
-                        <span class="detail-value" id="tempValue">...</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">Water Level:</span>
-                        <span class="detail-value" id="waterLevelValue">...</span>
-                    </div>
-                </div>
-                <div class="detail-column">
-                    <div class="detail-item">
-                        <span class="detail-label">Status:</span>
-                        <span class="detail-value" id="breedingStatus">...</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="notification-card">
-            <div class="notification-title">A new breeding site has been detected!</div>
-            <div class="notification-content">
-                <div class="detail-column">
-                    <div class="detail-item">
-                        <span class="detail-label">Timestamp:</span>
-                        <span class="detail-value">Waiting for connection...</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">GPS location:</span>
-                        <span class="detail-value">Waiting for connection...</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">Type of Object:</span>
-                        <span class="detail-value">No data available</span>
-                        <span class="detail-note">(bamboo, tires, plant pots cement bamboo planters)</span>
-                    </div>
-                </div>
-                <div class="detail-column">
-                    <div class="detail-item">
-                        <span class="detail-label">pH Level:</span>
-                        <span class="detail-value">Waiting for sensor...</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">Turbidity:</span>
-                        <span class="detail-value">Waiting for sensor...</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">Dissolved Oxygen:</span>
-                        <span class="detail-value">Waiting for sensor...</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">Temperature:</span>
-                        <span class="detail-value">Waiting for sensor...</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="notification-card">
-            <div class="notification-title">A breeding site has been treated!</div>
-            <div class="notification-content">
-                <div class="detail-column">
-                    <div class="detail-item">
-                        <span class="detail-label">Timestamp:</span>
-                        <span class="detail-value">Waiting for connection...</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">GPS location:</span>
-                        <span class="detail-value">Waiting for connection...</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">Type of Object:</span>
-                        <span class="detail-value">No data available</span>
-                        <span class="detail-note">(bamboo, tires, plant pots cement bamboo planters)</span>
-                    </div>
-                </div>
-                <div class="detail-column">
-                    <div class="detail-item">
-                        <span class="detail-label">pH Level:</span>
-                        <span class="detail-value">Waiting for sensor...</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">Turbidity:</span>
-                        <span class="detail-value">Waiting for sensor...</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">Dissolved Oxygen:</span>
-                        <span class="detail-value">Waiting for sensor...</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="detail-label">Temperature:</span>
-                        <span class="detail-value">Waiting for sensor...</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="notification-card" id="sprayEventsCard">
-            <h2 class="notification-title">Spray Event History</h2>
-            <div id="sprayEventsList">
-                Loading spray events...
-            </div>
+            <a href="/error-logs">Error Logs</a>
         </div>
     </div>
-
+    <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:24px;">
+        <label for="pwmSlider" style="font-size:1.1rem; font-weight:500; margin-bottom:8px;">Motor Speed (PWM): <span id="pwmValue">32768</span></label>
+        <input type="range" id="pwmSlider" min="20000" max="65535" value="32768" style="width:300px;">
+    </div>
+    <div class="dpad-container">
+        <div class="dpad-diagonal-row">
+            <button class="dpad-btn" id="northwestBtn">&#8598;</button>
+            <button class="dpad-btn" id="forwardBtn">&#8593;</button>
+            <button class="dpad-btn" id="northeastBtn">&#8599;</button>
+        </div>
+        <div class="dpad-middle-row">
+            <button class="dpad-btn" id="leftBtn">&#8592;</button>
+            <div class="dpad-center"></div>
+            <button class="dpad-btn" id="rightBtn">&#8594;</button>
+        </div>
+        <div class="dpad-diagonal-row">
+            <button class="dpad-btn" id="southwestBtn">&#8601;</button>
+            <button class="dpad-btn" id="backwardBtn">&#8595;</button>
+            <button class="dpad-btn" id="southeastBtn">&#8600;</button>
+        </div>
+    </div>
+    <div style="display:flex; flex-direction:column; align-items:center; margin-top:32px;">
+        <h2>Move to Object</h2>
+        <div style="display: flex; gap: 16px; flex-wrap: wrap; justify-content: center;">
+            <button class="dpad-btn" onclick="moveToObject('plant_pots')">Plant Pots</button>
+            <button class="dpad-btn" onclick="moveToObject('bamboo_stump')">Bamboo Stump</button>
+            <button class="dpad-btn" onclick="moveToObject('tires')">Tires</button>
+            <button class="dpad-btn" onclick="moveToObject('bamboo_planter')">Bamboo Planter</button>
+        </div>
+    </div>
+    <div style="display:flex; flex-direction:column; align-items:center; margin-top:32px;">
+        <h2>Pump Control</h2>
+        <div style="display: flex; gap: 16px; flex-wrap: wrap; justify-content: center;">
+            <button class="dpad-btn" onclick="pumpControl('on')">Pump ON</button>
+            <button class="dpad-btn" onclick="pumpControl('off')">Pump OFF</button>
+        </div>
+    </div>
+    <div style="display:flex; flex-direction:column; align-items:center; margin-top:32px;">
+        <button id="resetBtn">Reset All Channels</button>
+    </div>
     <script>
-        // --- Breeding Site Detection Logic ---
-        function updateBreedingStatus() {
-            fetch('/api/live_sample')
-                .then(res => res.json())
-                .then(data => {
-                    const ph = data.ph.ph;
-                    const doValue = data.do.do;
-                    const turbidity = data.turbidity.voltage;
-                    const temp = data.temp;
-                    const waterLevel = data.water_level.voltage;
-    
-                    document.getElementById('phValue').textContent = ph ? ph.toFixed(2) : '...';
-                    document.getElementById('doValue').textContent = doValue ? doValue.toFixed(2) : '...';
-                    document.getElementById('turbidityValue').textContent = turbidity ? turbidity.toFixed(2) + 'V' : '...';
-                    document.getElementById('tempValue').textContent = temp ? temp.toFixed(2) + '�C' : '...';
-                    document.getElementById('waterLevelValue').textContent = waterLevel ? waterLevel.toFixed(2) + 'V' : '...';
-    
-                    let meetsRequirements = 0;
-                    if (ph >= 5.26 && ph <= 8.41) meetsRequirements++;
-                    if (doValue >= 0.5 && doValue <= 2.6) meetsRequirements++;
-                    if (turbidity >= 0.29 && turbidity <= 731.00) meetsRequirements++;
-                    if (temp >= 26.80 && temp <= 33.20) meetsRequirements++;
-    
-                    if (waterLevel && meetsRequirements >= 2) {
-                        document.getElementById('breedingStatus').textContent = 'Breeding Site Detected';
-                    } else {
-                        document.getElementById('breedingStatus').textContent = 'No Breeding Site Detected';
-                    }
-                });
-        }
-        setInterval(updateBreedingStatus, 5000);
-        updateBreedingStatus();
+        // --- PWM Slider Logic ---
+        const pwmSlider = document.getElementById('pwmSlider');
+        const pwmValue = document.getElementById('pwmValue');
+        pwmSlider.addEventListener('input', () => {
+            pwmValue.textContent = pwmSlider.value;
+        });
+        function getPWM() { return parseInt(pwmSlider.value); }
 
-        // --- Spray Event History ---
-        function loadSprayEvents() {
-            fetch('/api/spray_events')
-                .then(res => res.json())
-                .then(events => {
-                    const list = document.getElementById('sprayEventsList');
-                    if (!events || events.length === 0) {
-                        list.innerHTML = '<div>No spray events recorded.</div>';
-                        return;
-                    }
-                    list.innerHTML = events.map(ev => `
-                        <div class="detail-item" style="margin-bottom: 16px; border-bottom: 1px solid #ccc; padding-bottom: 8px;">
-                            <div><b>Date:</b> ${ev.date} <b>Time:</b> ${ev.time}</div>
-                            <div><b>Water Level:</b> ${ev.water_level !== null ? ev.water_level.toFixed(2) : 'N/A'}</div>
-                            <div><b>pH:</b> ${ev.ph !== null ? ev.ph.toFixed(2) : 'N/A'}</div>
-                            <div><b>Turbidity:</b> ${ev.turbidity !== null ? ev.turbidity.toFixed(2) : 'N/A'}</div>
-                            <div><b>Temperature:</b> ${ev.temperature !== null ? ev.temperature.toFixed(2) : 'N/A'}</div>
-                            <div><b>Latitude:</b> ${ev.lat !== null ? ev.lat : 'N/A'} <b>Longitude:</b> ${ev.lng !== null ? ev.lng : 'N/A'}</div>
-                        </div>
-                    `).join('');
-                })
-                .catch(() => {
-                    document.getElementById('sprayEventsList').innerHTML = '<div>Error loading spray events.</div>';
-                });
+        // --- Real-Time Button Control ---
+        function sendAction(action, pwm) {
+            fetch('/manual_control', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action, pwm })
+            });
         }
-        loadSprayEvents();
+        function sendStop() {
+            sendAction('stop', getPWM());
+        }
+        function setupRealtimeButton(btnId, action) {
+            const btn = document.getElementById(btnId);
+            let isPressed = false;
+            // Mouse events
+            btn.addEventListener('mousedown', () => { isPressed = true; sendAction(action, getPWM()); });
+            btn.addEventListener('mouseup', () => { isPressed = false; sendStop(); });
+            btn.addEventListener('mouseleave', () => { if (isPressed) { isPressed = false; sendStop(); } });
+            // Touch events
+            btn.addEventListener('touchstart', (e) => { e.preventDefault(); isPressed = true; sendAction(action, getPWM()); });
+            btn.addEventListener('touchend', () => { isPressed = false; sendStop(); });
+        }
+        setupRealtimeButton('forwardBtn', 'forward');
+        setupRealtimeButton('backwardBtn', 'backward');
+        setupRealtimeButton('leftBtn', 'left');
+        setupRealtimeButton('rightBtn', 'right');
+        setupRealtimeButton('northwestBtn', 'northwest');
+        setupRealtimeButton('northeastBtn', 'northeast');
+        setupRealtimeButton('southwestBtn', 'southwest');
+        setupRealtimeButton('southeastBtn', 'southeast');
+        // --- Keyboard support ---
+        const keyMap = { ArrowUp: 'forward', ArrowDown: 'backward', ArrowLeft: 'left', ArrowRight: 'right',
+            wq: 'northwest', we: 'northeast', sq: 'southwest', se: 'southeast' };
+        let keyDown = {};
+        let combo = '';
+        document.addEventListener('keydown', function(e) {
+            if (e.repeat) return;
+            if (e.key.length === 1) combo += e.key.toLowerCase();
+            if (keyMap[e.key]) {
+                if (!keyDown[e.key]) {
+                    keyDown[e.key] = true;
+                    sendAction(keyMap[e.key], getPWM());
+                }
+            } else if (keyMap[combo]) {
+                if (!keyDown[combo]) {
+                    keyDown[combo] = true;
+                    sendAction(keyMap[combo], getPWM());
+                }
+            }
+            if (e.key === ' ') sendStop();
+        });
+        document.addEventListener('keyup', function(e) {
+            if (keyMap[e.key]) {
+                keyDown[e.key] = false;
+                sendStop();
+            } else if (combo && keyMap[combo]) {
+                keyDown[combo] = false;
+                sendStop();
+                combo = '';
+            }
+        });
+        // Reset Button
+        const resetBtn = document.getElementById('resetBtn');
+        resetBtn.addEventListener('click', () => {
+            resetBtn.disabled = true;
+            fetch('/reset_channels', { method: 'POST' })
+                .then(r => r.json()).then(res => {
+                    resetBtn.disabled = false;
+                    if(res.status !== 'success') alert(res.message || 'Error');
+                }).catch(() => { resetBtn.disabled = false; });
+        });
+        function moveToObject(object) {
+            // Optionally disable buttons here
+            fetch('/move_to_object', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ object })
+            })
+            .then(response => response.json())
+            .then(data => {
+                // alert(data.status); // Removed notification
+            })
+            .catch(() => {
+                // Optionally handle error silently
+            });
+        }
+        function pumpControl(state) {
+            fetch(state === 'on' ? '/pump_on' : '/pump_off', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                // No alert or notification
+            })
+            .catch(() => {/* No notification */});
+        }
     </script>
 </body>
-</html>
-{% endblock %} 
+</html> 
