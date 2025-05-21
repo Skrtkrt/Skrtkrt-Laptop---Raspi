@@ -349,30 +349,18 @@ def read_do():
     VREF = 5000
     ADC_RES = 32767
 
-    # Calibration range (example values)
-    MIN_VOLTAGE_DO = 400  # mV at 0.5%
-    MAX_VOLTAGE_DO = 2000  # mV at 2.6%
-
     try:
         i2c_bus = smbus.SMBus(1)
         adc = Adafruit_ADS1x15.ADS1115(busnum=1)
 
-        # Select TCA channel
+        # Re-select TCA channel 1 before each read
         i2c_bus.write_byte(TCA_ADDRESS, 1 << TCA_CHANNEL)
 
         raw = adc.read_adc(ADS_CHANNEL, gain=GAIN)
         voltage = (raw / ADC_RES) * VREF  # Convert to millivolts
 
-        # Map voltage to % DO
-        if voltage < MIN_VOLTAGE_DO:
-            do_percent = 0.5
-        elif voltage > MAX_VOLTAGE_DO:
-            do_percent = 2.6
-        else:
-            do_percent = 0.5 + (voltage - MIN_VOLTAGE_DO) * (2.6 - 0.5) / (MAX_VOLTAGE_DO - MIN_VOLTAGE_DO)
-
-        print(f"[DEBUG] DO P1 -> Raw ADC: {raw} | Voltage: {voltage:.2f} mV | DO: {do_percent:.2f}%")
-        return {'do': do_percent, 'voltage': voltage, 'raw': raw}
+        print(f"[DEBUG] DO P1 -> Raw ADC: {raw} | Voltage: {voltage:.2f} mV")
+        return {'do': voltage, 'voltage': voltage, 'raw': raw}
     except OSError as e:
         print("[ERROR] I2C communication error. Check wiring and channel selection.")
         print(e)
@@ -492,9 +480,9 @@ def read_water_level():
 
 # === Servo Arm Control ===
 servo_config = {
-    9: {"min": 10, "max": 70, "init": 70, "delay": 0.02, "rest": 0},
-    10: {"min": 0, "max": 180, "init": 40, "delay": 0.04, "rest": 0 },
-    11: {"min": 0, "max": 180, "init": 0, "delay": 0.08, "rest": 160},
+    9: {"min": 20, "max": 70, "init": 70, "delay": 0.03},
+    10: {"min": 0, "max": 100, "init": 100, "delay": 0.08},
+    11: {"min": 0, "max": 45, "init": 0, "delay": 0.1},
 }
 
 def angle_to_pwm(angle):
@@ -590,22 +578,21 @@ def move_dc_motor(pca, direction, pwm):
 object_positions = {
     "plant_pots": {9: 60, 10: 45, 11: 10},
     "bamboo_stump": {9: 30, 10: 75, 11: 10},
-    "tires": {9: 60, 10: 45, 11: 0},
+    "tires": {9: 60, 10: 45, 11: 10},
     "bamboo_planter": {9: 30, 10: 75, 11: 10}
 }
 
 straight_position = {9: 70, 10: 0, 11: 0}  # Adjust as needed
-init_position = {ch: servo_config[ch]["init"] for ch in servo_config}
-rest_position = {ch: servo_config[ch]["rest"] for ch in servo_config}
+rest_position = {ch: servo_config[ch]["init"] for ch in servo_config}
 
 def move_channels_11_then_10(pca, targets):
-    # Move channel 11 first, then 9, then 10 (if present)
+    # Move channel 11 first, if present
     if 11 in targets:
         smooth_move(pca, 11, targets[11], servo_config[11]["delay"])
-    if 9 in targets:
-        smooth_move(pca, 9, targets[9], servo_config[9]["delay"])
-    if 10 in targets:
-        smooth_move(pca, 10, targets[10], servo_config[10]["delay"])
+    # Then move other channels (excluding 11)
+    for ch in targets:
+        if ch != 11:
+            smooth_move(pca, ch, targets[ch], servo_config[ch]["delay"])
 
 def move_channels_9_10_11(pca, targets):
     # Move channel 9 first, then 10, then 11
@@ -619,7 +606,7 @@ def move_channels_9_10_11(pca, targets):
 def perform_object_sequence(object_name):
     pca = setup_pca9685(channel=0, frequency=50)
     # Step 1: Reset all servos to rest
-    move_channels_9_10_11(pca, init_position)
+    move_channels_9_10_11(pca, rest_position)
     time.sleep(0.5)
     # Step 2: Set frequency (already set above)
     set_servo_freq(pca, 50)
