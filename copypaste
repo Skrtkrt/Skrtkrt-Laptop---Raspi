@@ -628,7 +628,7 @@ def perform_object_sequence(object_name):
     # Step 7: Return to rest
     move_channels_9_10_11(pca, rest_position)
     time.sleep(0.5)
-    # Do NOT reset all channels, so servos hold position
+    reset_all_channels(pca)  # Reset all 16 channels to 0 (servos will lose holding torque)
     pca.deinit()
 
 def init_pump_gpio():
