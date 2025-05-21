@@ -594,10 +594,19 @@ def move_channels_11_then_10(pca, targets):
         if ch != 11:
             smooth_move(pca, ch, targets[ch], servo_config[ch]["delay"])
 
+def move_channels_9_10_11(pca, targets):
+    # Move channel 9 first, then 10, then 11
+    if 9 in targets:
+        smooth_move(pca, 9, targets[9], servo_config[9]["delay"])
+    if 10 in targets:
+        smooth_move(pca, 10, targets[10], servo_config[10]["delay"])
+    if 11 in targets:
+        smooth_move(pca, 11, targets[11], servo_config[11]["delay"])
+
 def perform_object_sequence(object_name):
     pca = setup_pca9685(channel=0, frequency=50)
     # Step 1: Reset all servos to rest
-    move_channels(pca, rest_position)
+    move_channels_9_10_11(pca, rest_position)
     time.sleep(0.5)
     # Step 2: Set frequency (already set above)
     set_servo_freq(pca, 50)
@@ -617,10 +626,10 @@ def perform_object_sequence(object_name):
     move_channels(pca, straight_position)
     time.sleep(0.5)
     # Step 7: Return to rest
-    move_channels(pca, rest_position)
+    move_channels_9_10_11(pca, rest_position)
     time.sleep(0.5)
-    reset_all_channels(pca)  # Reset all 16 channels to 0
-    pca.deinit() 
+    # Do NOT reset all channels, so servos hold position
+    pca.deinit()
 
 def init_pump_gpio():
     global _pump_gpio_handle
