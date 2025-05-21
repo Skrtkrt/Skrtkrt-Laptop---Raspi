@@ -468,6 +468,7 @@
                             gpsMarker = L.marker([gps.lat, gps.lng], { icon: robotIcon, title: 'Rover' }).addTo(map);
                         } else {
                             gpsMarker.setLatLng([gps.lat, gps.lng]);
+                            gpsMarker.setIcon(robotIcon);
                         }
                         map.setView([gps.lat, gps.lng]);
                         document.getElementById('gpsInfo').textContent =
