@@ -284,6 +284,7 @@
         let pointToSet = null;
         let pointSettingMessage = null;
         let cancelPointBtn = null;
+        let gpsCentered = false;
 
         // Point colors for consistency
         const pointColors = {
@@ -470,7 +471,10 @@
                             gpsMarker.setLatLng([gps.lat, gps.lng]);
                             gpsMarker.setIcon(robotIcon);
                         }
-                        map.setView([gps.lat, gps.lng]);
+                        if (!gpsCentered) {
+                            map.setView([gps.lat, gps.lng]);
+                            gpsCentered = true;
+                        }
                         document.getElementById('gpsInfo').textContent =
                             `Current Location: ${gps.lat.toFixed(6)}, ${gps.lng.toFixed(6)}`;
                     } else {
