@@ -500,10 +500,10 @@
                             iconAnchor: [18, 36],
                             popupAnchor: [0, -36]
                         });
-                        const marker = L.marker([data.lat, data.lng], { icon: houseIcon })
+                        if (window.dockingMarker) map.removeLayer(window.dockingMarker);
+                        window.dockingMarker = L.marker([data.lat, data.lng], { icon: houseIcon })
                             .addTo(map)
-                            .bindPopup('Docking Station<br><button onclick=\"goToLatLng(' + data.lat + ',' + data.lng + ')\">Go to Dock</button>');
-                        allMarkers.push(marker);
+                            .bindPopup('Docking Station<br><button onclick="goToLatLng(' + data.lat + ',' + data.lng + ')">Go to Dock</button>');
                     } else {
                         console.log('No docking station set.');
                     }
