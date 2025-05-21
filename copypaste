@@ -1,686 +1,640 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Maps - Larva Tracker</title>
-    <!-- Leaflet CSS & JS from CDN -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-    <!-- Optional: Geocoder plugin from CDN -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
-    <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/common.css') }}">
+import time
+import busio
+from board import SCL, SDA
+from adafruit_pca9685 import PCA9685
+from gpiozero import OutputDevice, DistanceSensor
+import board
+from adafruit_tca9548a import TCA9548A
+import adafruit_ads1x15.ads1115 as ADS
+from adafruit_ads1x15.analog_in import AnalogIn
+import Adafruit_ADS1x15  # For DO sensor
+import glob
+import os
+import serial  # For UART GPS
+import threading
+import queue
+import datetime
+import lgpio
+try:
+    from picamera import PiCamera
+except (ImportError, OSError):
+    PiCamera = None
+
+# For YOLOv8 (assume ultralytics is installed)
+try:
+    from ultralytics import YOLO
+except ImportError:
+    YOLO = None
+
+# Global variables for hardware instances
+_i2c = None
+_tca = None
+_r_en1 = None
+_l_en1 = None
+_r_en2 = None
+_l_en2 = None
+_back_sensor = None
+_front_sensor = None
+_adc = None
+_temp_sensor_initialized = False
+
+# Constants for pH sensor
+PH_7_VOLTAGE = 2.50
+PH_SLOPE = -5.7
+
+# Constants for DO sensor
+GAIN = 1
+VREF = 5000
+ADC_RES = 32767
+CAL1_V = 131
+CAL1_T = 25
+DO_Table = [
+    14460, 14220, 13820, 13440, 13090, 12740, 12420, 12110, 11810, 11530,
+    11260, 11010, 10770, 10530, 10300, 10080, 9860, 9660, 9460, 9270,
+    9080, 8900, 8730, 8570, 8410, 8250, 8110, 7960, 7820, 7690,
+    7560, 7430, 7300, 7180, 7070, 6950, 6840, 6730, 6630, 6530, 6410
+]
+READ_TEMP = 25
+
+# --- GPS Integration ---
+_gps_serial = None
+_gps_queue = queue.Queue()
+_gps_thread = None
+_gps_latest = None
+_latest_gps = None
+
+# Shared hardware resources
+_ads = None
+_ads_lock = threading.Lock()
+
+_temp_sensor_lock = threading.Lock()
+
+RELAY_PIN = 26
+_pump_gpio_handle = None
+
+def _gps_reader():
+    """Background thread to read GPS data from ESP32"""
+    global _latest_gps
+    current_data = {}
     
-    <style>
-        body {
-            margin: 0;
-            padding: 0;
-            font-family: Arial, sans-serif;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            background: white;
-        }
+    while True:
+        try:
+            ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=1)
+            # print("[INFO] Connected to ESP32 GPS")
+            
+            while True:
+                try:
+                    line = ser.readline().decode('utf-8').strip()
+                    if line:
+                        # print(f"[DEBUG] ESP32 says: {line}")
+                        if line.startswith("Latitude:"):
+                            try:
+                                lat = float(line.split("Latitude:")[1].strip())
+                                current_data['lat'] = lat
+                            except ValueError as e:
+                                # print(f"[ERROR] Failed to parse latitude: {e}")
+                                pass
+                        elif line.startswith("Longitude:"):
+                            try:
+                                lng = float(line.split("Longitude:")[1].strip())
+                                current_data['lng'] = lng
+                            except ValueError as e:
+                                # print(f"[ERROR] Failed to parse longitude: {e}")
+                                pass
+                        elif line.startswith("Date:"):
+                            current_data['date'] = line.split("Date:")[1].strip()
+                        elif line.startswith("Time:"):
+                            current_data['time'] = line.split("Time:")[1].strip()
+                        elif line.startswith("-----------------------"):
+                            if 'lat' in current_data and 'lng' in current_data:
+                                if 4.6431 <= current_data['lat'] <= 21.1205 and 116.9549 <= current_data['lng'] <= 126.5995:
+                                    _latest_gps = {
+                                        'lat': current_data['lat'],
+                                        'lng': current_data['lng'],
+                                        'date': current_data.get('date'),
+                                        'time': current_data.get('time'),
+                                        'raw': f"Lat: {current_data['lat']}, Lng: {current_data['lng']}, Date: {current_data.get('date')}, Time: {current_data.get('time')}",
+                                        'timestamp': datetime.datetime.now().isoformat()
+                                    }
+                                    # print(f"[INFO] GPS Update - Lat: {current_data['lat']}, Lng: {current_data['lng']}, Date: {current_data.get('date')}, Time: {current_data.get('time')}")
+                                else:
+                                    # print(f"[WARNING] GPS coordinates outside Philippines bounds: {current_data['lat']}, {current_data['lng']}")
+                                    pass
+                            current_data = {}
+                except serial.SerialException as e:
+                    # print(f"[ERROR] GPS Serial read error: {e}")
+                    break
+        except serial.SerialException as e:
+            # print(f"[ERROR] GPS Serial connection failed: {e}")
+            time.sleep(5)
+        except Exception as e:
+            # print(f"[ERROR] GPS Thread error: {e}")
+            time.sleep(5)
+        finally:
+            try:
+                ser.close()
+            except:
+                pass
 
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 20px 40px;
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            background: white;
-            z-index: 100;
-        }
+def start_gps_thread():
+    global _gps_thread
+    if _gps_thread is None or not _gps_thread.is_alive():
+        _gps_thread = threading.Thread(target=_gps_reader, daemon=True)
+        _gps_thread.start()
 
-        .logo {
-            width: 80px;
-            height: auto;
-            cursor: pointer;
-            animation: logoSway 2s infinite ease-in-out;
-        }
+def parse_nmea(nmea):
+    # Minimal NMEA parser for GPRMC or GPGGA
+    try:
+        parts = nmea.split(',')
+        if nmea.startswith('$GPRMC') and parts[3] and parts[5]:
+            lat = float(parts[3][:2]) + float(parts[3][2:])/60.0
+            if parts[4] == 'S': lat = -lat
+            lng = float(parts[5][:3]) + float(parts[5][3:])/60.0
+            if parts[6] == 'W': lng = -lng
+            return {'lat': lat, 'lng': lng, 'raw': nmea}
+        elif nmea.startswith('$GPGGA') and parts[2] and parts[4]:
+            lat = float(parts[2][:2]) + float(parts[2][2:])/60.0
+            if parts[3] == 'S': lat = -lat
+            lng = float(parts[4][:3]) + float(parts[4][3:])/60.0
+            if parts[5] == 'W': lng = -lng
+            return {'lat': lat, 'lng': lng, 'raw': nmea}
+    except Exception:
+        pass
+    return {'lat': None, 'lng': None, 'raw': nmea}
 
-        .logo:hover {
-            animation: logoWiggle 0.5s infinite;
-        }
+def get_latest_gps():
+    start_gps_thread()
+    global _latest_gps
+    if _latest_gps:
+        return _latest_gps
+    return {'lat': None, 'lng': None, 'date': None, 'time': None, 'raw': None}
 
-        @keyframes logoSway {
-            0% { transform: rotate(-5deg); }
-            50% { transform: rotate(5deg); }
-            100% { transform: rotate(-5deg); }
-        }
+# === Ultrasonic Sensor Readings ===
+def get_ultrasonic():
+    initialize_hardware()
+    try:
+        front = _front_sensor.distance if _front_sensor else None
+        back = _back_sensor.distance if _back_sensor else None
+        return {'front': front, 'back': back}
+    except Exception as e:
+        return {'front': None, 'back': None, 'error': str(e)}
 
-        @keyframes logoWiggle {
-            0% { transform: rotate(-8deg); }
-            25% { transform: rotate(8deg); }
-            50% { transform: rotate(-8deg); }
-            75% { transform: rotate(8deg); }
-            100% { transform: rotate(-8deg); }
-        }
+# === Camera + YOLOv8 Object Detection ===
+_yolo_model = None
+_camera = None
 
-        .nav-menu {
-            display: flex;
-            gap: 20px;
-            align-items: center;
-        }
+def get_camera():
+    global _camera
+    if PiCamera is None:
+        print("[INFO] PiCamera not available on this system.")
+        return None
+    if _camera is None:
+        _camera = PiCamera()
+    return _camera
 
-        .nav-menu a {
-            text-decoration: none;
-            color: #666;
-            font-size: 18px;
-        }
+def run_yolo_inference():
+    global _yolo_model
+    if YOLO is None:
+        return {'error': 'YOLOv8 not installed'}
+    cam = get_camera()
+    if cam is None:
+        return {'error': 'PiCamera not available'}
+    if _yolo_model is None:
+        _yolo_model = YOLO('yolov8n.pt')  # Use nano model for speed
+    # Capture image to a temporary file
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix='.jpg') as tmp:
+        cam.capture(tmp.name)
+        results = _yolo_model(tmp.name)
+        # Return detected objects (labels and confidences)
+        objects = []
+        for r in results:
+            for box in r.boxes:
+                cls = int(box.cls[0])
+                conf = float(box.conf[0])
+                objects.append({'class': cls, 'confidence': conf})
+        return {'objects': objects}
 
-        .nav-menu a.active {
-            color: black;
-            font-weight: bold;
-        }
+def initialize_hardware():
+    global _i2c, _tca, _r_en1, _l_en1, _r_en2, _l_en2, _back_sensor, _front_sensor, _adc, _temp_sensor_initialized
+    
+    if _i2c is None:
+        # === Motor Enable Pins ===
+        _r_en1 = OutputDevice(17)
+        _l_en1 = OutputDevice(27)
+        _r_en2 = OutputDevice(23)
+        _l_en2 = OutputDevice(24)
 
-        .nav-menu span {
-            color: #666;
-        }
+        _r_en1.on()
+        _l_en1.on()
+        _r_en2.on()
+        _l_en2.on()
 
-        .content-wrapper {
-            display: flex;
-            height: calc(100vh - 120px); /* header height */
-            margin-top: 120px;
-            min-height: 0;
-        }
+        # === I2C Setup ===
+        _i2c = busio.I2C(SCL, SDA)
 
-        .sidebar {
-            width: 300px;
-            min-width: 220px;
-            max-width: 350px;
-            padding: 20px;
-            background: white;
-            overflow-y: auto;
-        }
+        # === TCA9548A Multiplexer Setup ===
+        _tca = TCA9548A(_i2c)
 
-        .point-markers {
-            display: flex;
-            flex-direction: column;
-            gap: 15px;
-        }
+        # === Ultrasonic Sensors ===
+        _back_sensor = DistanceSensor(echo=19, trigger=13, max_distance=4)
+        _front_sensor = DistanceSensor(echo=6, trigger=5, max_distance=4)
 
-        .point {
-            display: flex;
-            align-items: center;
-            padding: 10px 20px;
-            border: none;
-            color: black;
-            font-size: 16px;
-            font-weight: bold;
-            cursor: pointer;
-            position: relative;
-            clip-path: polygon(0 0, 85% 0, 100% 50%, 85% 100%, 0 100%);
-            width: 200px;
-        }
+        # === DO Sensor Setup ===
+        try:
+            _adc = Adafruit_ADS1x15.ADS1115(busnum=1)
+        except Exception as e:
+            print(f"[WARN] DO sensor not available: {e}")
+            _adc = None
 
-        .point-a { background-color: #FF9966; }
-        .point-b { background-color: #66CCFF; }
-        .point-c { background-color: #FF66B2; }
-        .point-d { background-color: #99FF66; }
+        # === Temperature Sensor Setup ===
+        try:
+            if not _temp_sensor_initialized:
+                # Check if modules are already loaded
+                if not os.path.exists('/sys/bus/w1/devices'):
+                    print("[INFO] Temperature sensor modules not loaded, using default temperature")
+                else:
+                    _temp_sensor_initialized = True
+        except Exception as e:
+            print(f"[WARN] Temperature sensor setup error: {e}")
 
-        .pattern-controls {
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #f8f8f8;
-            border-radius: 5px;
-            border: 1px solid #ddd;
-        }
+def select_tca_channel(channel):
+    if _i2c is None:
+        initialize_hardware()
+    _i2c.writeto(0x70, bytes([1 << channel]))
 
-        .pattern-button {
-            width: 100%;
-            padding: 10px;
-            margin: 5px 0;
-            border: none;
-            border-radius: 5px;
-            background-color: #4CAF50;
-            color: white;
-            font-weight: bold;
-            cursor: pointer;
-            transition: background-color 0.3s;
-        }
+# === PCA9685 Setup ===
+def setup_pca9685(channel, frequency=1000):
+    if _i2c is None:
+        initialize_hardware()
+    select_tca_channel(channel)
+    pca = PCA9685(_i2c)
+    pca.frequency = frequency
+    return pca
 
-        .pattern-button:hover {
-            background-color: #45a049;
-        }
+# === PWM Control ===
+def set_pwm(pca, channel, duty):
+    pca.channels[channel].duty_cycle = duty
 
-        .pattern-button.active {
-            background-color: #2196F3;
-        }
+def move_forward(pca, pwm):
+    set_pwm(pca, 0, pwm)  # Left backward
+    set_pwm(pca, 1, 0)    # Left forward off
+    set_pwm(pca, 2, 0)    # Right forward off
+    set_pwm(pca, 3, pwm)  # Right backward
 
-        .point-info {
-            margin-top: 10px;
-            padding: 10px;
-            background-color: #f0f0f0;
-            border-radius: 5px;
-            font-size: 14px;
-        }
+def move_backward(pca, pwm):
+    set_pwm(pca, 0, 0)    # Left backward off
+    set_pwm(pca, 1, pwm)  # Left forward
+    set_pwm(pca, 2, pwm)  # Right forward
+    set_pwm(pca, 3, 0)    # Right backward off
 
-        .circle-info {
-            margin-top: 5px;
-            color: #666;
-        }
+def stop_motors(pca):
+    for ch in range(4):
+        set_pwm(pca, ch, 0)
 
-        .docking-controls {
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #f8f8f8;
-            border-radius: 5px;
-            border: 1px solid #ddd;
-        }
+def rotate_left(pca, pwm):
+    set_pwm(pca, 0, pwm)  # Left backward
+    set_pwm(pca, 1, 0)
+    set_pwm(pca, 2, pwm)  # Right forward
+    set_pwm(pca, 3, 0)
 
-        .docking-button {
-            padding: 10px;
-            border: none;
-            border-radius: 5px;
-            background-color: #2196F3;
-            color: white;
-            font-weight: bold;
-            cursor: pointer;
-            transition: background-color 0.3s;
-            width: 100%;
-            margin-top: 10px;
-        }
+def rotate_right(pca, pwm):
+    set_pwm(pca, 0, 0)
+    set_pwm(pca, 1, pwm)  # Left forward
+    set_pwm(pca, 2, 0)
+    set_pwm(pca, 3, pwm)  # Right backward
 
-        .docking-button:hover {
-            background-color: #1976D2;
-        }
+def move_northwest(pca, pwm):
+    set_pwm(pca, 0, int(pwm / 4))  # Left backward low
+    set_pwm(pca, 1, 0)
+    set_pwm(pca, 2, 0)
+    set_pwm(pca, 3, pwm)           # Right backward
 
-        .docking-button.returning {
-            background-color: #FF9800;
-        }
+def move_northeast(pca, pwm):
+    set_pwm(pca, 0, pwm)           # Left backward
+    set_pwm(pca, 1, 0)
+    set_pwm(pca, 2, 0)
+    set_pwm(pca, 3, int(pwm / 4))  # Right backward low
 
-        #map {
-            flex: 1 1 auto;
-            height: 100vh;
-            min-height: 0;
-        }
+def move_southwest(pca, pwm):
+    set_pwm(pca, 0, 0)
+    set_pwm(pca, 1, int(pwm / 4))  # Left forward low
+    set_pwm(pca, 2, pwm)           # Right forward
+    set_pwm(pca, 3, 0)
 
-        .gps-info {
-            position: absolute;
-            top: 140px;
-            right: 40px;
-            background: rgba(255,255,255,0.95);
-            border: 1px solid #ccc;
-            border-radius: 8px;
-            padding: 12px 18px;
-            font-size: 16px;
-            z-index: 2000;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        }
+def move_southeast(pca, pwm):
+    set_pwm(pca, 0, 0)
+    set_pwm(pca, 1, pwm)           # Left forward
+    set_pwm(pca, 2, int(pwm / 4))  # Right forward low
+    set_pwm(pca, 3, 0)
 
-        @media (max-width: 900px) {
-            .content-wrapper { flex-direction: column; }
-            .sidebar { width: 100%; max-width: none; }
-            #map { height: 60vh; }
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <img src="{{ url_for('static', filename='images/larva logo.png') }}" alt="Logo" class="logo" onclick="window.location.href='/control'">
-        <nav class="nav-menu">
-            <a href="/main">HOME</a>
-            <span>|</span>
-            <a href="/maps" class="active">MAPS</a>
-            <span>|</span>
-            <a href="/schedules">SCHEDULES</a>
-            <span>|</span>
-            <a href="/notifications">NOTIFICATION</a>
-            <span>|</span>
-            <a href="/error-logs">ERROR LOGS</a>
-        </nav>
-    </div>
+# === pH Sensor ===
+def read_ph():
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    with _ads_lock:
+        channel = AnalogIn(_ads, 2)  # ADS.P2
+        voltage = channel.voltage
+        pH_Value = (voltage - 2.5) * 3.5 + 7.0
+        return {'ph': pH_Value, 'voltage': voltage}
 
-    <div class="content-wrapper">
-        <div class="sidebar">
-            <div class="point-markers">
-                <button class="point point-a" onclick="enterPointSettingMode('A')">Point A</button>
-                <button class="point point-b" onclick="enterPointSettingMode('B')">Point B</button>
-                <button class="point point-c" onclick="enterPointSettingMode('C')">Point C</button>
-                <button class="point point-d" onclick="enterPointSettingMode('D')">Point D</button>
-            </div>
+# === DO Sensor ===
+def read_do():
+    import smbus
+    import Adafruit_ADS1x15
+    TCA_ADDRESS = 0x70
+    TCA_CHANNEL = 1
+    ADS_CHANNEL = 1  # A1/P1
+    GAIN = 1
+    VREF = 5000
+    ADC_RES = 32767
 
-            <div class="pattern-controls">
-                <h3>Pattern Selection</h3>
-                <div class="point-info">
-                    <div class="circle-info">Circle Radius: 15 meters</div>
-                    <div id="pattern-status">No pattern selected</div>
-                </div>
-            </div>
+    try:
+        i2c_bus = smbus.SMBus(1)
+        adc = Adafruit_ADS1x15.ADS1115(busnum=1)
 
-            <div class="docking-controls">
-                <h3>Docking Station</h3>
-                <button class="docking-button" id="setDockingBtn">Set Docking Station</button>
-                <button class="docking-button" id="returnDockBtn" style="margin-top:10px;background:#FF9800;">Return to Dock</button>
-                <div id="dockingStatus" style="margin-top:10px;font-weight:bold;">Docking Status: <span id="dockingStatusValue">Unknown</span></div>
-            </div>
-            <div class="custom-point-controls">
-                <button class="docking-button" id="addCustomPointBtn">Add Custom Point</button>
-            </div>
-        </div>
-        <div id="map"></div>
-        <div id="gpsInfo" class="gps-info">No GPS data</div>
-    </div>
+        # Re-select TCA channel 1 before each read
+        i2c_bus.write_byte(TCA_ADDRESS, 1 << TCA_CHANNEL)
 
-    <script src="{{ url_for('static', filename='js/map.js') }}"></script>
+        raw = adc.read_adc(ADS_CHANNEL, gain=GAIN)
+        voltage = (raw / ADC_RES) * VREF  # Convert to millivolts
 
-    <script>
-        let currentPoint = null;
-        let mapInstance = null;
-        let robotMarker = null;
-        let scheduleMarkers = [];
-        let scheduleCircles = [];
-        let setDockingMode = false;
-        let allMarkers = [];
-        let pointMarkers = {};
-        let addCustomPointMode = false;
-        let customMarkers = [];
-        let pointSettingMode = false;
-        let pointToSet = null;
-        let pointSettingMessage = null;
-        let cancelPointBtn = null;
-        let gpsCentered = false;
+        print(f"[DEBUG] DO P1 -> Raw ADC: {raw} | Voltage: {voltage:.2f} mV")
+        return {'do': voltage, 'voltage': voltage, 'raw': raw}
+    except OSError as e:
+        print("[ERROR] I2C communication error. Check wiring and channel selection.")
+        print(e)
+        return {'do': None, 'voltage': None, 'error': str(e)}
+    except Exception as e:
+        print(f"[WARN] DO sensor error: {e}")
+        return {'do': None, 'voltage': None, 'error': str(e)}
 
-        // Point colors for consistency
-        const pointColors = {
-            'A': '#FF9966',
-            'B': '#66CCFF',
-            'C': '#FF66B2',
-            'D': '#99FF66'
-        };
+# === Turbidity Sensor ===
+latest_turbidity = None
 
-        // Pampanga bounds
-        const pampangaBounds = L.latLngBounds(
-            L.latLng(14.80, 120.35), // Southwest
-            L.latLng(15.25, 120.95)  // Northeast
-        );
+def turbidity_reader():
+    global latest_turbidity
+    while True:
+        try:
+            voltage = read_turbidity()
+            latest_turbidity = voltage
+            print(voltage)
+        except Exception as e:
+            latest_turbidity = None
+            print(f"Error reading turbidity: {str(e)}")
+        import time; time.sleep(1)
 
-        // Map layers: try offline first, fallback to online if missing
-        const offlineLayer = L.tileLayer('/static/map_tiles/{z}/{x}/{y}.png', {
-            minZoom: 12,
-            maxZoom: 19,
-            attribution: 'Offline Map'
-        });
-        const onlineLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            minZoom: 0,
-            maxZoom: 19,
-            attribution: 'Map data © OpenStreetMap contributors'
-        });
+def start_turbidity_thread():
+    if not hasattr(start_turbidity_thread, "started"):
+        threading.Thread(target=turbidity_reader, daemon=True).start()
+        start_turbidity_thread.started = True
 
-        // Initialize map with offline layer
-        const map = L.map('map', {
-            center: [15.0409, 120.6668], // Pampanga center
-            zoom: 11,
-            maxBounds: pampangaBounds,
-            layers: [offlineLayer]
-        });
+def get_latest_turbidity():
+    start_turbidity_thread()
+    return latest_turbidity
 
-        // Fallback: if any offline tile fails, add the online layer
-        let onlineLayerAdded = false;
-        offlineLayer.on('tileerror', function(event) {
-            if (!onlineLayerAdded) {
-                map.addLayer(onlineLayer);
-                onlineLayerAdded = true;
-            }
-        });
+# === Temperature Sensor ===
+def read_temp():
+    try:
+        with _temp_sensor_lock:
+            device_folders = glob.glob('/sys/bus/w1/devices/28*')
+            if not device_folders:
+                return {'temp': None, 'error': 'No sensor found'}
+            device_file = device_folders[0] + '/w1_slave'
+            with open(device_file, 'r') as f:
+                lines = f.readlines()
+            if len(lines) < 2 or 'YES' not in lines[0]:
+                return {'temp': None, 'error': 'Invalid sensor response'}
+            temp_output = lines[1].find('t=')
+            if temp_output == -1:
+                return {'temp': None, 'error': 'Temperature data not found'}
+            temp_string = lines[1][temp_output+2:]
+            temp_c = float(temp_string) / 1000.0
+            if -55 <= temp_c <= 125:
+                return {'temp': temp_c}
+            else:
+                return {'temp': None, 'error': 'Temperature out of valid range'}
+    except Exception as e:
+        return {'temp': None, 'error': str(e)}
 
-        // Optional: allow user to switch layers manually
-        L.control.layers({
-            'Offline': offlineLayer,
-            'Online': onlineLayer
-        }).addTo(map);
+# === Cleanup Function ===
+def cleanup(pca):
+    stop_motors(pca)
+    pca.deinit()
+    if _r_en1: _r_en1.off()
+    if _l_en1: _l_en1.off()
+    if _r_en2: _r_en2.off()
+    if _l_en2: _l_en2.off()
 
-        function enterPointSettingMode(point) {
-            pointSettingMode = true;
-            pointToSet = point;
-            map.getContainer().style.cursor = 'crosshair';
-            map.dragging.disable();
-            map.scrollWheelZoom.disable();
-            // Show on-screen message
-            if (!pointSettingMessage) {
-                pointSettingMessage = document.createElement('div');
-                pointSettingMessage.id = 'pointSettingMessage';
-                pointSettingMessage.style.position = 'fixed';
-                pointSettingMessage.style.top = '80px';
-                pointSettingMessage.style.left = '50%';
-                pointSettingMessage.style.transform = 'translateX(-50%)';
-                pointSettingMessage.style.background = '#2196F3';
-                pointSettingMessage.style.color = 'white';
-                pointSettingMessage.style.padding = '12px 32px';
-                pointSettingMessage.style.borderRadius = '8px';
-                pointSettingMessage.style.fontSize = '18px';
-                pointSettingMessage.style.zIndex = 2000;
-                document.body.appendChild(pointSettingMessage);
-            }
-            pointSettingMessage.textContent = `Click on the map to set Point ${point}`;
-            pointSettingMessage.style.display = 'block';
-            // Add Cancel button
-            if (!cancelPointBtn) {
-                cancelPointBtn = document.createElement('button');
-                cancelPointBtn.textContent = 'Cancel';
-                cancelPointBtn.style.marginLeft = '16px';
-                cancelPointBtn.style.background = '#f44336';
-                cancelPointBtn.style.color = 'white';
-                cancelPointBtn.style.border = 'none';
-                cancelPointBtn.style.padding = '8px 20px';
-                cancelPointBtn.style.borderRadius = '6px';
-                cancelPointBtn.style.fontSize = '16px';
-                cancelPointBtn.style.cursor = 'pointer';
-                cancelPointBtn.onclick = exitPointSettingMode;
-                pointSettingMessage.appendChild(cancelPointBtn);
-            } else {
-                pointSettingMessage.appendChild(cancelPointBtn);
-            }
-        }
+# Initialize I2C, TCA9548A, and ADS1115 only once
+def initialize_ads():
+    global _i2c, _tca, _ads
+    if _i2c is None or _tca is None or _ads is None:
+        import board, busio
+        import adafruit_ads1x15.ads1115 as ADS
+        from adafruit_tca9548a import TCA9548A
+        _i2c = busio.I2C(board.SCL, board.SDA)
+        _tca = TCA9548A(_i2c)
+        ads_i2c = _tca[1]
+        _ads = ADS.ADS1115(ads_i2c)
 
-        function exitPointSettingMode() {
-            pointSettingMode = false;
-            pointToSet = null;
-            map.getContainer().style.cursor = '';
-            map.dragging.enable();
-            map.scrollWheelZoom.enable();
-            if (pointSettingMessage) pointSettingMessage.style.display = 'none';
-        }
+# Helper to select multiplexer channel
+def select_ads_channel(channel):
+    initialize_ads()
+    with _ads_lock:
+        # Select channel 1 on the TCA9548A (where ADS1115 is connected)
+        ads_i2c = _tca[1]
+        # Re-initialize ADS1115 for each read to ensure correct channel
+        from adafruit_ads1x15 import ads1115 as ADS
+        _ads = ADS.ADS1115(ads_i2c)
+        from adafruit_ads1x15.analog_in import AnalogIn
+        return AnalogIn(_ads, channel)
 
-        // Update point button click handlers to use new mode
-        // Example: document.querySelector('.point-a').onclick = () => enterPointSettingMode('A');
-        document.querySelectorAll('.point').forEach(btn => {
-            btn.onclick = function() {
-                const point = btn.textContent.trim().split(' ')[1];
-                enterPointSettingMode(point);
-            };
-        });
+# Turbidity (A0)
+def read_turbidity():
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    with _ads_lock:
+        channel = AnalogIn(_ads, 0)  # ADS.P0
+        voltage = channel.voltage
+        return voltage
 
-        // Handle map clicks
-        document.getElementById('setDockingBtn').onclick = function() {
-            setDockingMode = true;
-            map.getContainer().style.cursor = 'crosshair';
-        };
-        map.on('click', function(e) {
-            if (setDockingMode) {
-                setDockingStation(e.latlng);
-                setDockingMode = false;
-                map.getContainer().style.cursor = '';
-            } else if (pointSettingMode && pointToSet) {
-                handlePointSelection(pointToSet, e.latlng);
-                exitPointSettingMode();
-            } else if (addCustomPointMode) {
-                fetch('/move_rover', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ lat: e.latlng.lat, lng: e.latlng.lng })
-                }).then(res => res.json()).then(data => {
-                    alert('Rover moving to: ' + data.lat + ', ' + data.lng);
-                });
-                addCustomPointMode = false;
-                document.getElementById('addCustomPointBtn').textContent = 'Add Custom Point';
-                map.getContainer().style.cursor = '';
-            } else {
-                goToLatLng(e.latlng.lat, e.latlng.lng);
-            }
-        });
+# pH Level (A2)
+def read_ph():
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    with _ads_lock:
+        channel = AnalogIn(_ads, 2)  # ADS.P2
+        voltage = channel.voltage
+        pH_Value = (voltage - 2.5) * 3.5 + 7.0
+        return {'ph': pH_Value, 'voltage': voltage}
 
-        // Simulate status updates (for testing)
-        let batteryLevel = 100;
-        let waterLevel = 100;
+# Water Level (A3)
+def read_water_level():
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    with _ads_lock:
+        channel = AnalogIn(_ads, 3)  # ADS.P3
+        voltage = channel.voltage
+        return channel.value, voltage
 
-        // On initial load, show 'No GPS data'
-        document.getElementById('gpsInfo').textContent = 'No GPS data';
+# === Servo Arm Control ===
+servo_config = {
+    9: {"min": 20, "max": 70, "init": 70, "delay": 0.03},
+    10: {"min": 0, "max": 100, "init": 100, "delay": 0.08},
+    11: {"min": 0, "max": 45, "init": 0, "delay": 0.1},
+}
 
-        // Function to clear all schedule markers/circles
-        function clearScheduleMarkers() {
-            scheduleMarkers.forEach(m => map.removeLayer(m));
-            scheduleMarkers = [];
-            scheduleCircles.forEach(c => map.removeLayer(c));
-            scheduleCircles = [];
-        }
+def angle_to_pwm(angle):
+    pulse_length_us = 500 + (angle / 180) * 2000
+    duty_cycle = int((pulse_length_us / 20000) * 65535)
+    return duty_cycle
 
-        // When adding markers for A/B/C/D, store them in pointMarkers
-        function addPointMarker(point, lat, lng) {
-            const color = pointColors[point] || '#2196F3';
-            const marker = L.marker([lat, lng], {title: `Point ${point}`}).addTo(map);
-            marker.bindPopup(`<b>Point ${point}</b><br><button onclick=\"goToLatLng(${lat},${lng})\">Go to Point</button>`);
-            pointMarkers[point] = marker;
-            allMarkers.push(marker);
-            marker.on('contextmenu', function(ev) {
-                showMarkerContextMenu(marker, ev.latlng);
-            });
-        }
+def set_servo_angle(pca, channel, angle):
+    cfg = servo_config[channel]
+    clamped = max(cfg["min"], min(angle, cfg["max"]))
+    pca.channels[channel].duty_cycle = angle_to_pwm(clamped)
+    return clamped
 
-        let gpsMarker = null;
-        const robotIcon = L.icon({
-            iconUrl: '/static/images/rover.png',
-            iconSize: [36, 36],
-            iconAnchor: [18, 36],
-            popupAnchor: [0, -36]
-        });
+# Track current angles for all channels
+current_angles = {9: servo_config[9]["init"], 10: servo_config[10]["init"], 11: servo_config[11]["init"]}
 
-        function updateGPSOnMap() {
-            fetch('/api/gps')
-                .then(res => res.json())
-                .then(gps => {
-                    if (gps && gps.lat && gps.lng) {
-                        if (!gpsMarker) {
-                            gpsMarker = L.marker([gps.lat, gps.lng], { icon: robotIcon, title: 'Rover' }).addTo(map);
-                        } else {
-                            gpsMarker.setLatLng([gps.lat, gps.lng]);
-                            gpsMarker.setIcon(robotIcon);
-                        }
-                        if (!gpsCentered) {
-                            map.setView([gps.lat, gps.lng]);
-                            gpsCentered = true;
-                        }
-                        document.getElementById('gpsInfo').textContent =
-                            `Current Location: ${gps.lat.toFixed(6)}, ${gps.lng.toFixed(6)}`;
-                    } else {
-                        document.getElementById('gpsInfo').textContent = 'No GPS data';
-                    }
-                })
-                .catch(() => {
-                    document.getElementById('gpsInfo').textContent = 'Error fetching GPS data';
-                });
-        }
-        setInterval(updateGPSOnMap, 1000);
-        updateGPSOnMap();
+def smooth_move(pca, channel, target, delay):
+    global current_angles
+    current = current_angles[channel]
+    step = 1 if target > current else -1
+    for angle in range(current, target + step, step):
+        set_servo_angle(pca, channel, angle)
+        time.sleep(delay)
+    current_angles[channel] = target
+    return target
 
-        // Double-click to zoom to marker
-        document.querySelectorAll('.point').forEach(btn => {
-            btn.addEventListener('dblclick', function() {
-                const point = btn.textContent.trim().split(' ')[1];
-                if (pointMarkers[point]) {
-                    map.setView(pointMarkers[point].getLatLng(), 17, {animate: true});
-                    pointMarkers[point].openPopup();
-                }
-            });
-        });
+def move_channels(pca, targets):
+    threads = []
+    for ch in targets:
+        t = threading.Thread(target=smooth_move, args=(pca, ch, targets[ch], servo_config[ch]["delay"]))
+        threads.append(t)
+        t.start()
+    for t in threads:
+        t.join()
 
-        function showDockingStation() {
-            fetch('/get_docking_station')
-                .then(res => res.json())
-                .then(data => {
-                    console.log('Docking station data:', data);
-                    if (data.lat && data.lng) {
-                        const houseIcon = L.icon({
-                            iconUrl: '/static/images/house.png',
-                            iconSize: [36, 36],
-                            iconAnchor: [18, 36],
-                            popupAnchor: [0, -36]
-                        });
-                        if (window.dockingMarker) map.removeLayer(window.dockingMarker);
-                        window.dockingMarker = L.marker([data.lat, data.lng], { icon: houseIcon })
-                            .addTo(map)
-                            .bindPopup('Docking Station<br><button onclick="goToLatLng(' + data.lat + ',' + data.lng + ')">Go to Dock</button>');
-                    } else {
-                        console.log('No docking station set.');
-                    }
-                })
-                .catch(err => console.error('Error fetching docking station:', err));
-        }
+def reset_all_channels(pca):
+    for ch in range(16):
+        pca.channels[ch].duty_cycle = 0
 
-        function showAllScheduledPointsAndFit() {
-            clearScheduleMarkers();
-            allMarkers = [];
-            fetch('/get_schedules')
-                .then(res => res.json())
-                .then(schedules => {
-                    console.log('Schedules data:', schedules);
-                    schedules.forEach(sch => {
-                        if (sch.location && sch.point) {
-                            addPointMarker(sch.point, sch.location.lat, sch.location.lng);
-                            // Circle
-                            if (sch.radius) {
-                                const circle = L.circle([sch.location.lat, sch.location.lng], {
-                                    radius: Math.min(sch.radius, 20),
-                                    color: pointColors[sch.point] || '#2196F3',
-                                    fillColor: pointColors[sch.point] || '#2196F3',
-                                    fillOpacity: 0.15,
-                                    weight: 2
-                                }).addTo(map);
-                                scheduleCircles.push(circle);
-                            }
-                        }
-                    });
-                    // After all markers are added, fit map to bounds
-                    if (allMarkers.length > 0) {
-                        const group = L.featureGroup(allMarkers);
-                        map.fitBounds(group.getBounds().pad(0.2));
-                    } else {
-                        console.log('No scheduled points to show.');
-                    }
-                })
-                .catch(err => console.error('Error fetching schedules:', err));
-            showDockingStation();
-        }
+# === Utility Patterns for Servo and DC Motor Control ===
 
-        // Replace showAllScheduledPoints with the new function
-        showAllScheduledPointsAndFit();
+def reset_all_servos(pca):
+    """Set all servo channels to their initial position (from servo_config)."""
+    for channel, cfg in servo_config.items():
+        set_servo_angle(pca, channel, cfg["init"])
 
-        document.getElementById('addCustomPointBtn').onclick = function() {
-            addCustomPointMode = !addCustomPointMode;
-            this.textContent = addCustomPointMode ? 'Cancel Add Point' : 'Add Custom Point';
-            if (addCustomPointMode) {
-                map.getContainer().style.cursor = 'crosshair';
-            } else {
-                map.getContainer().style.cursor = '';
-            }
-        };
+def set_servo_freq(pca, freq):
+    """Set the PWM frequency for the servo controller."""
+    pca.frequency = freq
 
-        function showMarkerContextMenu(marker, latlng, isCustom = false) {
-            const menu = document.createElement('div');
-            menu.style.position = 'absolute';
-            menu.style.left = event.clientX + 'px';
-            menu.style.top = event.clientY + 'px';
-            menu.style.background = '#fff';
-            menu.style.border = '1px solid #ccc';
-            menu.style.padding = '8px';
-            menu.style.zIndex = 3000;
-            menu.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
-            menu.innerHTML = `<button id="editMarkerBtn">Edit</button> <button id="deleteMarkerBtn">Delete</button>`;
-            document.body.appendChild(menu);
+def move_servo(pca, channel, angle):
+    """Move a servo to a specific angle."""
+    return set_servo_angle(pca, channel, angle)
 
-            menu.querySelector('#editMarkerBtn').onclick = function() {
-                const newNote = prompt('Edit note:', marker.getPopup().getContent().replace(/<[^>]+>/g, ''));
-                if (newNote !== null) {
-                    marker.setPopupContent(`<b>${isCustom ? 'Custom Point' : 'Point'}</b><br>${newNote}`);
-                }
-                document.body.removeChild(menu);
-            };
-            menu.querySelector('#deleteMarkerBtn').onclick = function() {
-                map.removeLayer(marker);
-                document.body.removeChild(menu);
-            };
-            document.addEventListener('click', function handler() {
-                if (document.body.contains(menu)) document.body.removeChild(menu);
-                document.removeEventListener('click', handler);
-            });
-        }
+def servo_go_back_init(pca, channel):
+    """Move a servo back to its initial position."""
+    cfg = servo_config[channel]
+    return set_servo_angle(pca, channel, cfg["init"])
 
-        // Mission status colors
-        const statusColors = {
-            'visited': '#4CAF50',      // green
-            'in_progress': '#FFEB3B', // yellow
-            'pending': '#F44336'      // red
-        };
-        let missionStatus = {};
+# --- DC Motor Patterns ---
+def reset_all_motors(pca):
+    """Stop all DC motors."""
+    stop_motors(pca)
 
-        // Fetch mission status and update marker colors/status
-        function updateMissionStatus() {
-            fetch('/api/mission_status')
-                .then(res => res.json())
-                .then(status => {
-                    missionStatus = status;
-                    // Update docking status
-                    document.getElementById('dockingStatusValue').textContent =
-                        status.docking ? status.docking.replace('_', ' ').toUpperCase() : 'Unknown';
-                    // Update marker colors
-                    Object.keys(pointMarkers).forEach(pt => {
-                        if (status[pt] && pointMarkers[pt]) {
-                            const icon = L.divIcon({
-                                className: '',
-                                html: `<div style="background:${statusColors[status[pt]]||'#2196F3'};width:24px;height:24px;border-radius:50%;border:2px solid #333;"></div>`,
-                                iconSize: [24,24],
-                                iconAnchor: [12,24]
-                            });
-                            pointMarkers[pt].setIcon(icon);
-                        }
-                    });
-                });
-        }
-        setInterval(updateMissionStatus, 2000);
-        updateMissionStatus();
+def set_motor_freq(pca, freq):
+    """Set the PWM frequency for the DC motor controller."""
+    pca.frequency = freq
 
-        // Return to Dock button logic
-        document.getElementById('returnDockBtn').onclick = function() {
-            // TODO: Implement backend endpoint for actual rover command
-            document.getElementById('dockingStatusValue').textContent = 'EN ROUTE';
-            this.disabled = true;
-            setTimeout(() => { this.disabled = false; }, 5000); // Re-enable after 5s for demo
-            // Optionally, send fetch('/api/return_to_dock', {method:'POST'})
-        };
+def move_dc_motor(pca, direction, pwm):
+    """Move the DC motor in a direction with a given PWM value.
+    direction: 'forward', 'backward', 'left', 'right', 'nw', 'ne', 'sw', 'se'
+    """
+    if direction == 'forward':
+        move_forward(pca, pwm)
+    elif direction == 'backward':
+        move_backward(pca, pwm)
+    elif direction == 'left':
+        rotate_left(pca, pwm)
+    elif direction == 'right':
+        rotate_right(pca, pwm)
+    elif direction == 'nw':
+        move_northwest(pca, pwm)
+    elif direction == 'ne':
+        move_northeast(pca, pwm)
+    elif direction == 'sw':
+        move_southwest(pca, pwm)
+    elif direction == 'se':
+        move_southeast(pca, pwm)
+    else:
+        stop_motors(pca)
 
-        // Add global goToLatLng for navigation from popups and map clicks
-        function goToLatLng(lat, lng) {
-            // Draw route line from current robot position if available
-            if (window.gpsMarker && window.gpsMarker.getLatLng) {
-                if (window.navLine) map.removeLayer(window.navLine);
-                window.navLine = L.polyline([
-                    window.gpsMarker.getLatLng(),
-                    [lat, lng]
-                ], {color: 'red', weight: 4, dashArray: '8,8'}).addTo(map);
-            }
-            fetch('/move_rover', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ lat: lat, lng: lng })
-            }).then(res => res.json()).then(data => {
-                // Optionally show a status message
-                if (window.showNavStatus) window.showNavStatus('Rover moving to: ' + lat + ', ' + lng);
-            });
-        }
+# Object positions for each object
+object_positions = {
+    "plant_pots": {9: 60, 10: 45, 11: 10},
+    "bamboo_stump": {9: 30, 10: 75, 11: 10},
+    "tires": {9: 60, 10: 45, 11: 10},
+    "bamboo_planter": {9: 30, 10: 75, 11: 10}
+}
 
-        // Add global setDockingStation for docking station placement
-        function setDockingStation(latlng) {
-            fetch('/set_docking_station', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ lat: latlng.lat, lng: latlng.lng })
-            })
-            .then(res => res.json())
-            .then(data => {
-                // Remove old marker if it exists
-                if (window.dockingMarker) map.removeLayer(window.dockingMarker);
-                // Use houseIcon if defined, else default marker
-                let icon = (typeof houseIcon !== 'undefined') ? houseIcon : undefined;
-                window.dockingMarker = L.marker([latlng.lat, latlng.lng], icon ? {icon: icon} : {})
-                    .addTo(map)
-                    .bindPopup('Docking Station<br><button onclick="goToLatLng(' + latlng.lat + ',' + latlng.lng + ')">Go to Dock</button>');
-            });
-        }
-    </script>
-</body>
-</html> 
+straight_position = {9: 70, 10: 0, 11: 0}  # Adjust as needed
+rest_position = {ch: servo_config[ch]["init"] for ch in servo_config}
+
+def move_channels_11_then_10(pca, targets):
+    # Move channel 11 first, if present
+    if 11 in targets:
+        smooth_move(pca, 11, targets[11], servo_config[11]["delay"])
+    # Then move other channels (excluding 11)
+    for ch in targets:
+        if ch != 11:
+            smooth_move(pca, ch, targets[ch], servo_config[ch]["delay"])
+
+def perform_object_sequence(object_name):
+    pca = setup_pca9685(channel=0, frequency=50)
+    # Step 1: Reset all servos to rest
+    move_channels(pca, rest_position)
+    time.sleep(0.5)
+    # Step 2: Set frequency (already set above)
+    set_servo_freq(pca, 50)
+    # Step 3: Move to straight position
+    move_channels(pca, straight_position)
+    time.sleep(0.5)
+    # Step 4: Move to object position
+    if object_name in object_positions:
+        move_channels_11_then_10(pca, object_positions[object_name])
+    else:
+        print(f"Unknown object: {object_name}")
+        pca.deinit()
+        return
+    # Step 5: Hold
+    time.sleep(2)
+    # Step 6: Return to straight
+    move_channels(pca, straight_position)
+    time.sleep(0.5)
+    # Step 7: Return to rest
+    move_channels(pca, rest_position)
+    time.sleep(0.5)
+    reset_all_channels(pca)  # Reset all 16 channels to 0
+    pca.deinit() 
+
+def init_pump_gpio():
+    global _pump_gpio_handle
+    if _pump_gpio_handle is None:
+        _pump_gpio_handle = lgpio.gpiochip_open(0)
+        lgpio.gpio_claim_output(_pump_gpio_handle, RELAY_PIN)
+        lgpio.gpio_write(_pump_gpio_handle, RELAY_PIN, 1)  # Ensure OFF
+
+def pump_on():
+    init_pump_gpio()
+    lgpio.gpio_write(_pump_gpio_handle, RELAY_PIN, 0)
+    print("Water pump is ON")
+
+def pump_off():
+    init_pump_gpio()
+    lgpio.gpio_write(_pump_gpio_handle, RELAY_PIN, 1)
+    print("Water pump is OFF") 
