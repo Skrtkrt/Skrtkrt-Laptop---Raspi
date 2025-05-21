@@ -1,944 +1,699 @@
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify
-from flask_socketio import SocketIO, emit
-import os
-import json
-import math
-import uuid
-import sqlite3
-import threading
-import datetime
 import time
-from app import hardware
-from app.hardware import perform_object_sequence
-from app.compass import Compass
+import busio
+from board import SCL, SDA
+from adafruit_pca9685 import PCA9685
+from gpiozero import OutputDevice, DistanceSensor
+import board
+from adafruit_tca9548a import TCA9548A
+import adafruit_ads1x15.ads1115 as ADS
+from adafruit_ads1x15.analog_in import AnalogIn
+import Adafruit_ADS1x15  # For DO sensor
+import glob
+import os
+import serial  # For UART GPS
+import threading
+import queue
+import datetime
+import lgpio
+try:
+    from picamera import PiCamera
+except (ImportError, OSError):
+    PiCamera = None
 
-# Initialize Flask app
-app = Flask(__name__)
-app.secret_key = "your-secret-key"  # Required for session
-socketio = SocketIO(app)
+# For YOLOv8 (assume ultralytics is installed)
+try:
+    from ultralytics import YOLO
+except ImportError:
+    YOLO = None
 
-# Get the current directory
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Global variables for hardware instances
+_i2c = None
+_tca = None
+_r_en1 = None
+_l_en1 = None
+_r_en2 = None
+_l_en2 = None
+_back_sensor = None
+_front_sensor = None
+_adc = None
+_temp_sensor_initialized = False
 
-# Store target location
-target_location = None
-# Store point coordinates
-point_coordinates = {
-    'A': None,
-    'B': None,
-    'C': None,
-    'D': None
-}
-# Store current pattern
-current_pattern = None
-# Store docking station location
-docking_station = None
-# Store schedules
-schedules = {}
+# Constants for pH sensor
+PH_7_VOLTAGE = 2.50
+PH_SLOPE = -5.7
 
-# Dummy credentials (in real app, use proper authentication)
-CREDENTIALS = {
-    "admin": "password"
-}
+# Constants for DO sensor
+GAIN = 1
+VREF = 5000
+ADC_RES = 32767
+CAL1_V = 131
+CAL1_T = 25
+DO_Table = [
+    14460, 14220, 13820, 13440, 13090, 12740, 12420, 12110, 11810, 11530,
+    11260, 11010, 10770, 10530, 10300, 10080, 9860, 9660, 9460, 9270,
+    9080, 8900, 8730, 8570, 8410, 8250, 8110, 7960, 7820, 7690,
+    7560, 7430, 7300, 7180, 7070, 6950, 6840, 6730, 6630, 6530, 6410
+]
+READ_TEMP = 25
 
-DB_PATH = os.path.join(BASE_DIR, 'schedules.db')
+# --- GPS Integration ---
+_gps_serial = None
+_gps_queue = queue.Queue()
+_gps_thread = None
+_gps_latest = None
+_latest_gps = None
 
-# Initialize database
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS schedules (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        point TEXT UNIQUE,
-        day TEXT,
-        time TEXT,
-        pattern TEXT,
-        radius INTEGER,
-        lat REAL,
-        lng REAL,
-        week INTEGER
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS docking_station (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        lat REAL,
-        lng REAL
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS points (
-        point TEXT PRIMARY KEY,
-        lat REAL,
-        lng REAL
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS target_location (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        lat REAL,
-        lng REAL
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS samples (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp TEXT,
-        point TEXT,
-        lat REAL,
-        lng REAL,
-        ph REAL,
-        ph_voltage REAL,
-        do REAL,
-        do_voltage REAL,
-        turbidity REAL,
-        temp REAL,
-        water_level REAL
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS error_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp TEXT,
-        error_type TEXT,
-        message TEXT,
-        component TEXT,
-        severity TEXT,
-        water_level REAL,
-        gps_lat REAL,
-        gps_lng REAL
-    )''')
-    conn.commit()
-    conn.close()
+# Shared hardware resources
+_ads = None
+_ads_lock = threading.Lock()
 
-init_db()
+_temp_sensor_lock = threading.Lock()
 
-# --- Global State for Locking and Automation ---
-control_lock = threading.Lock()
-current_status = {'state': 'idle'}  # 'idle', 'manual', 'automating'
-automation_thread = None
-stop_automation_flag = threading.Event()
+RELAY_PIN = 26
+_pump_gpio_handle = None
 
-# Global navigation thread and lock
-nav_thread = None
-nav_thread_lock = threading.Lock()
-nav_status = {'running': False, 'target': None, 'last': None}
-
-# --- Helper: Set Status ---
-def set_status(state):
-    current_status['state'] = state
-
-# Routes
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/login', methods=['POST'])
-def login():
-    username = request.form.get('username')
-    password = request.form.get('password')
-
-    if username == "admin" and password == "password":
-        session['user'] = username
-        return redirect(url_for('main'))
-    else:
-        return redirect(url_for('index', error='invalid_credentials'))
-
-@app.route('/main')
-def main():
-    if 'user' not in session:
-        return redirect(url_for('index'))
-    return render_template('main.html')
-
-@app.route('/maps')
-def maps():
-    return render_template('maps.html')
-
-@app.route('/schedules')
-def schedules_page():
-    return render_template('schedules.html')
-
-@app.route('/notifications')
-def notifications():
-    return render_template('notifications.html')
-
-@app.route('/error-logs')
-def error_logs():
-    return render_template('error_logs.html')
-
-@app.route('/logout')
-def logout():
-    session.clear()
-    return redirect(url_for('index'))
-
-@app.route("/read-water")
-def read_water():
-    try:
-        raw, volt = hardware.read_water_level()
-        if raw is None or volt is None:
-            error_msg = "Failed to read water level: No valid data"
-            log_error('WATER_LEVEL_ERROR', error_msg, 'SENSOR', 'ERROR', water_level=None)
-            return f"Error reading water level: No valid data", 500
-            
-        # Log successful reading
-        log_error('WATER_LEVEL_INFO', f"Water level reading: raw={raw}, voltage={volt:.2f}V", 
-                 'SENSOR', 'INFO', water_level=volt)
-        return f"Water level raw: {raw}, Voltage: {volt:.2f} V"
-    except Exception as e:
-        error_msg = f"Error reading water level: {str(e)}"
-        log_error('WATER_LEVEL_ERROR', error_msg, 'SENSOR', 'ERROR', water_level=None)
-        return error_msg, 500
-
-@app.route('/move_rover', methods=['POST'])
-def move_rover():
-    data = request.get_json()
-    target_lat = float(data.get('lat'))
-    target_lng = float(data.get('lng'))
-    pwm = int(data.get('pwm', 40000))  # Default forward PWM
-    turn_pwm = 65535  # Default turn PWM
-
-    def haversine(lat1, lon1, lat2, lon2):
-        R = 6371000  # meters
-        phi1, phi2 = math.radians(lat1), math.radians(lat2)
-        dphi = math.radians(lat2 - lat1)
-        dlambda = math.radians(lon2 - lon1)
-        a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
-        return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-    def bearing(lat1, lon1, lat2, lon2):
-        phi1, phi2 = math.radians(lat1), math.radians(lat2)
-        dlambda = math.radians(lon2 - lon1)
-        y = math.sin(dlambda) * math.cos(phi2)
-        x = math.cos(phi1)*math.sin(phi2) - math.sin(phi1)*math.cos(phi2)*math.cos(dlambda)
-        brng = math.degrees(math.atan2(y, x))
-        return (brng + 360) % 360
-
-    def nav_thread_fn():
+def _gps_reader():
+    """Background thread to read GPS data from ESP32"""
+    global _latest_gps
+    current_data = {}
+    
+    while True:
         try:
-            nav_status['running'] = True
-            nav_status['target'] = {'lat': target_lat, 'lng': target_lng}
-            pca = hardware.setup_pca9685(channel=0)
-            compass = Compass()
-            STOP_DIST = 1.5  # meters
-            TURN_THRESH = 10  # degrees
-            last_gps = None
-            for _ in range(120):  # up to 2 minutes
-                gps = hardware.get_latest_gps()
-                if not gps or not gps['lat'] or not gps['lng']:
-                    hardware.stop_motors(pca)
-                    nav_status['last'] = 'no_gps'
+            ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=1)
+            # print("[INFO] Connected to ESP32 GPS")
+            
+            while True:
+                try:
+                    line = ser.readline().decode('utf-8').strip()
+                    if line:
+                        # print(f"[DEBUG] ESP32 says: {line}")
+                        if line.startswith("Latitude:"):
+                            try:
+                                lat = float(line.split("Latitude:")[1].strip())
+                                current_data['lat'] = lat
+                            except ValueError as e:
+                                # print(f"[ERROR] Failed to parse latitude: {e}")
+                                pass
+                        elif line.startswith("Longitude:"):
+                            try:
+                                lng = float(line.split("Longitude:")[1].strip())
+                                current_data['lng'] = lng
+                            except ValueError as e:
+                                # print(f"[ERROR] Failed to parse longitude: {e}")
+                                pass
+                        elif line.startswith("Date:"):
+                            current_data['date'] = line.split("Date:")[1].strip()
+                        elif line.startswith("Time:"):
+                            current_data['time'] = line.split("Time:")[1].strip()
+                        elif line.startswith("-----------------------"):
+                            if 'lat' in current_data and 'lng' in current_data:
+                                if 4.6431 <= current_data['lat'] <= 21.1205 and 116.9549 <= current_data['lng'] <= 126.5995:
+                                    _latest_gps = {
+                                        'lat': current_data['lat'],
+                                        'lng': current_data['lng'],
+                                        'date': current_data.get('date'),
+                                        'time': current_data.get('time'),
+                                        'raw': f"Lat: {current_data['lat']}, Lng: {current_data['lng']}, Date: {current_data.get('date')}, Time: {current_data.get('time')}",
+                                        'timestamp': datetime.datetime.now().isoformat()
+                                    }
+                                    # print(f"[INFO] GPS Update - Lat: {current_data['lat']}, Lng: {current_data['lng']}, Date: {current_data.get('date')}, Time: {current_data.get('time')}")
+                                else:
+                                    # print(f"[WARNING] GPS coordinates outside Philippines bounds: {current_data['lat']}, {current_data['lng']}")
+                                    pass
+                            current_data = {}
+                except serial.SerialException as e:
+                    # print(f"[ERROR] GPS Serial read error: {e}")
                     break
-                last_gps = gps
-                dist = haversine(gps['lat'], gps['lng'], target_lat, target_lng)
-                brng = bearing(gps['lat'], gps['lng'], target_lat, target_lng)
-                comp = compass.get_compass_data()
-                if not comp or 'heading' not in comp:
-                    hardware.stop_motors(pca)
-                    nav_status['last'] = 'no_compass'
-                    break
-                heading = comp['heading']
-                err = (brng - heading + 360) % 360
-                if err > 180:
-                    err -= 360
-                if dist < STOP_DIST:
-                    hardware.stop_motors(pca)
-                    nav_status['last'] = 'arrived'
-                    break
-                if abs(err) > TURN_THRESH:
-                    if err > 0:
-                        hardware.rotate_right(pca, turn_pwm)
-                    else:
-                        hardware.rotate_left(pca, turn_pwm)
-                else:
-                    hardware.move_forward(pca, pwm)
-                nav_status['last'] = {'gps': gps, 'compass': comp, 'dist': dist, 'bearing': brng, 'heading': heading, 'err': err}
-                time.sleep(0.5)
-            hardware.stop_motors(pca)
-            nav_status['running'] = False
+        except serial.SerialException as e:
+            # print(f"[ERROR] GPS Serial connection failed: {e}")
+            time.sleep(5)
         except Exception as e:
-            nav_status['last'] = f'error: {e}'
+            # print(f"[ERROR] GPS Thread error: {e}")
+            time.sleep(5)
+        finally:
             try:
-                hardware.stop_motors(pca)
+                ser.close()
             except:
                 pass
-            nav_status['running'] = False
 
-    with nav_thread_lock:
-        global nav_thread
-        if nav_status['running']:
-            return jsonify({'status': 'busy', 'message': 'Navigation already in progress'}), 409
-        nav_thread = threading.Thread(target=nav_thread_fn, daemon=True)
-        nav_thread.start()
-    return jsonify({'status': 'started', 'target': {'lat': target_lat, 'lng': target_lng}, 'pwm': pwm})
+def start_gps_thread():
+    global _gps_thread
+    if _gps_thread is None or not _gps_thread.is_alive():
+        _gps_thread = threading.Thread(target=_gps_reader, daemon=True)
+        _gps_thread.start()
 
-@app.route('/control_motors', methods=['POST'])
-def control_motors():
-    data = request.get_json()
-    action = data.get('action')
-
-# New route for setting point coordinates
-@app.route('/set_point', methods=['POST'])
-def set_point():
-    data = request.get_json()
-    point = data['point']
-    lat = data['lat']
-    lng = data['lng']
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO points (point, lat, lng)
-        VALUES (?, ?, ?)
-        ON CONFLICT(point) DO UPDATE SET lat=excluded.lat, lng=excluded.lng
-    ''', (point, lat, lng))
-    conn.commit()
-    conn.close()
-    return jsonify({'status': 'success', 'point': {'lat': lat, 'lng': lng}})
-
-# New route for getting point coordinates
-@app.route('/get_points')
-def get_points():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT point, lat, lng FROM points')
-    rows = c.fetchall()
-    conn.close()
-    # Build dictionary with keys 'A', 'B', 'C', 'D'
-    points = {pt: None for pt in ['A', 'B', 'C', 'D']}
-    for row in rows:
-        points[row[0]] = {'lat': row[1], 'lng': row[2]}
-    return jsonify(points)
-
-# New route for setting pattern
-@app.route('/set_docking_station', methods=['POST'])
-def set_docking_station():
-    data = request.get_json()
-    lat = data['lat']
-    lng = data['lng']
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO docking_station (id, lat, lng)
-        VALUES (1, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET lat=excluded.lat, lng=excluded.lng
-    ''', (lat, lng))
-    conn.commit()
-    conn.close()
-    return jsonify({'status': 'success', 'docking_station': {'lat': lat, 'lng': lng}})
-
-# New route for getting docking station
-@app.route('/get_docking_station')
-def get_docking_station():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT lat, lng FROM docking_station WHERE id=1')
-    row = c.fetchone()
-    conn.close()
-    if row and row[0] is not None and row[1] is not None:
-        return jsonify({'lat': row[0], 'lng': row[1]})
-    else:
-        return jsonify({'status': 'no_docking_station'})
-    
-# New route for getting current pattern
-@app.route('/get_pattern')
-def get_pattern():
-    return jsonify({'pattern': current_pattern})
-
-# Function to calculate distance between two GPS points
-def calculate_distance(lat1, lon1, lat2, lon2):
-    R = 6371  # Earth's radius in kilometers
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat/2) * math.sin(dlat/2) + \
-        math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * \
-        math.sin(dlon/2) * math.sin(dlon/2)
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-    distance = R * c
-    return distance
-
-@socketio.on('connect')
-def handle_connect():
-    print('Client connected')
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    print('Client disconnected')
-
-@socketio.on('position_update')
-def handle_position_update(data):
+def parse_nmea(nmea):
+    # Minimal NMEA parser for GPRMC or GPGGA
     try:
-        if data.get('type') == 'position_update':
-            lat = data.get('lat', 0)
-            lng = data.get('lng', 0)
-
-            # Check if within Philippines bounds
-            if 4.6431 <= lat <= 21.1205 and 116.9549 <= lng <= 126.5995:
-                emit('position', {
-                    'type': 'position',
-                    'lat': lat,
-                    'lng': lng
-                })
-
-                # If we have a target, calculate distance and direction
-                if target_location:
-                    distance = calculate_distance(lat, lng, target_location['lat'], target_location['lng'])
-                    emit('target_info', {
-                        'type': 'target_info',
-                        'distance': distance,
-                        'target': target_location
-                    })
-
-                    # If we're close to target (within 1 meter)
-                    if distance < 0.001:
-                        # If we're returning to dock and we've reached it
-                        if docking_station and target_location['lat'] == docking_station['lat'] and target_location['lng'] == docking_station['lng']:
-                            emit('docking_status', {
-                                'type': 'docking_status',
-                                'status': 'docked'
-                            })
-                        # If we're following a pattern
-                        elif current_pattern:
-                            emit('pattern_progress', {
-                                'type': 'pattern_progress',
-                                'pattern': current_pattern,
-                                'reached_target': True
-                            })
-
-                # Check if we're in any point's range
-                for point, coords in point_coordinates.items():
-                    if coords:
-                        distance = calculate_distance(lat, lng, coords['lat'], coords['lng'])
-                        if distance <= 0.015:  # Within 15 meters
-                            emit('point_range', {
-                                'type': 'point_range',
-                                'point': point,
-                                'in_range': True,
-                                'distance': distance
-                            })
-            else:
-                emit('error', {
-                    'type': 'error',
-                    'message': 'Position outside Philippines bounds'
-                })
-    except json.JSONDecodeError:
-        emit('error', {
-            'type': 'error',
-            'message': 'Invalid JSON data'
-        })
-    except Exception as e:
-        print(f"WebSocket error: {e}")
-
-@app.route('/save_schedule', methods=['POST'])
-def save_schedule():
-    data = request.get_json()
-    print('Received schedule data:', data)  # Debug print
-
-    required_fields = ['week', 'point', 'day', 'time', 'pattern', 'radius', 'location']
-    missing = [field for field in required_fields if field not in data]
-    if missing:
-        print('Missing fields:', missing)
-        return jsonify({'success': False, 'error': f'Missing fields: {missing}'}), 400
-
-    if not isinstance(data['location'], dict) or 'lat' not in data['location'] or 'lng' not in data['location']:
-        print('Invalid location:', data.get('location'))
-        return jsonify({'success': False, 'error': 'Invalid location'}), 400
-
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        # Upsert: replace if point exists
-        c.execute('''INSERT INTO schedules (point, day, time, pattern, radius, lat, lng, week)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                     ON CONFLICT(point) DO UPDATE SET
-                        day=excluded.day, time=excluded.time, pattern=excluded.pattern,
-                        radius=excluded.radius, lat=excluded.lat, lng=excluded.lng, week=excluded.week''',
-                  (data['point'], data['day'], data['time'], data['pattern'], data['radius'],
-                   data['location']['lat'], data['location']['lng'], data['week']))
-        conn.commit()
-        conn.close()
-        print('Schedule saved successfully')
-        return jsonify({'success': True})
-    except Exception as e:
-        print('Error saving schedule:', e)
-        return jsonify({'success': False, 'error': str(e)}), 400
-
-@app.route('/get_schedules')
-def get_schedules():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT point, day, time, pattern, radius, lat, lng, week FROM schedules')
-    rows = c.fetchall()
-    conn.close()
-    schedules = []
-    for row in rows:
-        schedules.append({
-            'point': row[0],
-            'day': row[1],
-            'time': row[2],
-            'pattern': row[3],
-            'radius': row[4],
-            'location': {'lat': row[5], 'lng': row[6]},
-            'week': row[7]
-        })
-    return jsonify(schedules)
-
-# --- Background Scheduler Thread ---
-def scheduler_thread():
-    while True:
-        now = datetime.datetime.now()
-        weekday = now.strftime('%A')
-        current_time = now.strftime('%H:%M')
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('SELECT point, lat, lng FROM schedules WHERE day=? AND time=?', (weekday, current_time))
-        due = c.fetchall()
-        conn.close()
-        for point, lat, lng in due:
-            # Simulate navigation, YOLO, arm, and sampling
-            # (Replace with real navigation and YOLO logic as needed)
-            print(f"[SCHEDULER] Navigating to {point} at {lat},{lng}")
-            # Move arm to sample position
-            hardware.set_arm_angle(90)
-            time.sleep(2)
-            # Read all sensors
-            ph = hardware.read_ph()
-            do = hardware.read_do()
-            try:
-                turbidity_voltage = hardware.get_latest_turbidity()
-                turbidity = {'voltage': turbidity_voltage}
-            except Exception as e:
-                print(f"[ERROR] Turbidity sensor: {e}")
-                turbidity = {'voltage': None, 'error': str(e)}
-            temp = hardware.read_temp()
-            water_level = hardware.read_water_level()
-            # Log sample
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute('''INSERT INTO samples (timestamp, point, lat, lng, ph, ph_voltage, do, do_voltage, turbidity, temp, water_level)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
-                now.isoformat(), point, lat, lng,
-                ph['ph'], ph['voltage'],
-                do['do'], do['voltage'],
-                turbidity['voltage'], temp, water_level['voltage']
-            ))
-            conn.commit()
-            conn.close()
-            print(f"[SCHEDULER] Sample logged for {point}")
-        time.sleep(60)  # Check every minute
-
-# Start scheduler in background
-threading.Thread(target=scheduler_thread, daemon=True).start()
-
-# --- API Endpoints for Live Data and History ---
-@app.route('/api/live_sample')
-def api_live_sample():
-    try:
-        try:
-            ph = hardware.read_ph()
-        except Exception as e:
-            print(f"[ERROR] pH sensor: {e}")
-            ph = {'ph': None, 'voltage': None, 'error': str(e)}
-        try:
-            do = hardware.read_do()
-        except Exception as e:
-            print(f"[ERROR] DO sensor: {e}")
-            do = {'do': None, 'voltage': None, 'error': str(e)}
-        try:
-            turbidity_voltage = hardware.get_latest_turbidity()
-            if turbidity_voltage is None:
-                turbidity_voltage = hardware.read_turbidity()
-            turbidity = {'voltage': turbidity_voltage}
-        except Exception as e:
-            print(f"[ERROR] Turbidity sensor: {e}")
-            turbidity = {'voltage': None, 'error': str(e)}
-        try:
-            temp = hardware.read_temp()
-        except Exception as e:
-            print(f"[ERROR] Temp sensor: {e}")
-            temp = None
-        try:
-            water_level_raw, water_level_voltage = hardware.read_water_level()
-        except Exception as e:
-            print(f"[ERROR] Water level sensor: {e}")
-            water_level_raw, water_level_voltage = None, None
-
-        if water_level_voltage is None:
-            water_status = "disconnected"
-            detected = None
-        else:
-            water_status = "connected"
-            detected = "Yes" if water_level_voltage > 0.2 else "No"
-
-        return jsonify({
-            'ph': ph,
-            'do': do,
-            'turbidity': turbidity,
-            'temp': temp,
-            'water_level': {
-                'raw': water_level_raw,
-                'voltage': water_level_voltage,
-                'status': water_status,
-                'detected': detected
-            }
-        })
-    except Exception as e:
-        print(f"[API ERROR] /api/live_sample: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/sample_history')
-def api_sample_history():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT timestamp, point, lat, lng, ph, do, turbidity, temp, water_level FROM samples ORDER BY timestamp DESC LIMIT 100')
-    rows = c.fetchall()
-    conn.close()
-    history = [
-        {
-            'timestamp': row[0],
-            'point': row[1],
-            'lat': row[2],
-            'lng': row[3],
-            'ph': row[4],
-            'do': row[5],
-            'turbidity': row[6],
-            'temp': row[7],
-            'water_level': row[8]
-        }
-        for row in rows
-    ]
-    return jsonify(history)
-
-# --- API: GPS Data ---
-@app.route('/api/gps')
-def api_gps():
-    gps = hardware.get_latest_gps()
-    # Store in DB if valid
-    if gps['lat'] is not None and gps['lng'] is not None:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS gps_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            lat REAL,
-            lng REAL,
-            raw TEXT,
-            date TEXT,
-            time TEXT
-        )''')
-        conn.commit()
-        # Use date/time from GPS if available, else try to parse NMEA
-        date_str = gps.get('date')
-        time_str = gps.get('time')
-        if not date_str or not time_str:
-            if gps.get('raw'):
-                try:
-                    parts = gps['raw'].split(',')
-                    if gps['raw'].startswith('$GPRMC'):
-                        if len(parts) > 9:
-                            time_str = f"{parts[1][:2]}:{parts[1][2:4]}:{parts[1][4:6]}"
-                            date_str = f"{parts[9][4:6]}/{parts[9][2:4]}/{parts[9][:2]}"
-                    elif gps['raw'].startswith('$GPGGA'):
-                        if len(parts) > 1:
-                            time_str = f"{parts[1][:2]}:{parts[1][2:4]}:{parts[1][4:6]}"
-                            now = datetime.datetime.now()
-                            date_str = now.strftime("%m/%d/%Y")
-                except Exception as e:
-                    print(f"Error parsing GPS date/time: {e}")
-        c.execute('INSERT INTO gps_log (timestamp, lat, lng, raw, date, time) VALUES (?, ?, ?, ?, ?, ?)',
-                  (datetime.datetime.now().isoformat(), gps['lat'], gps['lng'], gps['raw'], date_str, time_str))
-        conn.commit()
-        conn.close()
-        gps['date'] = date_str
-        gps['time'] = time_str
-    else:
-        log_error('GPS_ERROR', 'No valid GPS data received', 'GPS', 'WARNING', 
-                 gps_lat=gps.get('lat'), gps_lng=gps.get('lng'))
-    return jsonify(gps)
-
-# --- API: Ultrasonic Sensors ---
-@app.route('/api/ultrasonic')
-def api_ultrasonic():
-    return jsonify(hardware.get_ultrasonic())
-
-# --- API: YOLOv8 Object Detection ---
-@app.route('/api/yolo')
-def api_yolo():
-    # This may take a few seconds to run
-    return jsonify(hardware.run_yolo_inference())
-
-# --- Mission Progress Status API (Demo) ---
-@app.route('/api/mission_status')
-def api_mission_status():
-    # Demo/mock data: in real use, update with actual mission logic
-    # Example: {'A': 'visited', 'B': 'in_progress', 'C': 'pending', 'D': 'pending', 'docking': 'docked'}
-    status = {
-        'A': 'visited',
-        'B': 'in_progress',
-        'C': 'pending',
-        'D': 'pending',
-        'docking': 'docked'  # or 'en_route', 'away'
-    }
-    return jsonify(status)
-
-# Add error logging function
-def log_error(error_type, message, component, severity, water_level=None, gps_lat=None, gps_lng=None):
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('''INSERT INTO error_logs 
-                    (timestamp, error_type, message, component, severity, water_level, gps_lat, gps_lng)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                 (datetime.datetime.now().isoformat(), error_type, message, component, 
-                  severity, water_level, gps_lat, gps_lng))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Error logging failed: {str(e)}")
-
-# Add endpoint to get error logs
-@app.route('/api/error-logs')
-def get_error_logs():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT timestamp, error_type, message, component, severity, water_level, gps_lat, gps_lng FROM error_logs ORDER BY timestamp DESC LIMIT 100')
-    rows = c.fetchall()
-    conn.close()
-    logs = [
-        {
-            'timestamp': row[0],
-            'error_type': row[1],
-            'message': row[2],
-            'component': row[3],
-            'severity': row[4],
-            'water_level': row[5],
-            'gps_lat': row[6],
-            'gps_lng': row[7]
-        }
-        for row in rows
-    ]
-    return jsonify(logs)
-
-# Add endpoint to clear error logs
-@app.route('/api/error-logs/clear', methods=['POST'])
-def clear_error_logs():
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('DELETE FROM error_logs')
-        conn.commit()
-        conn.close()
-        return jsonify({'status': 'success'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-@app.route('/test')
-def test():
-    return render_template('test.html')
-
-# Updated /read-turbidity route to return only the voltage value
-@app.route('/read-turbidity')
-def read_turbidity():
-    try:
-        voltage = hardware.get_latest_turbidity()
-        if voltage is None:
-            return 'No data', 503
-        return f"{voltage:.3f}"
-    except Exception as e:
-        error_msg = f"Error reading turbidity: {str(e)}"
-        log_error('TURBIDITY_ERROR', error_msg, 'SENSOR', 'ERROR')
-        return error_msg, 500
-
-@app.route('/api/yolo_detection')
-def yolo_detection():
-    try:
-        # Run YOLOv8 inference
-        results = hardware.run_yolo_inference()
-        
-        if 'error' in results:
-            return jsonify({'error': results['error']}), 500
-            
-        # Map YOLOv8 class names to our object labels
-        yolo_to_obj = {
-            'plant_pot': 'A',
-            'bamboo_stump': 'B',
-            'tire': 'C',
-            'bamboo_planter': 'D'
-        }
-        
-        # Get the highest confidence detection
-        detected_object = None
-        highest_conf = 0
-        
-        for obj in results['objects']:
-            class_name = obj['class']
-            confidence = obj['confidence']
-            
-            if confidence > highest_conf and class_name in yolo_to_obj:
-                highest_conf = confidence
-                detected_object = yolo_to_obj[class_name]
-        
-        return jsonify({
-            'object': detected_object,
-            'confidence': highest_conf if detected_object else 0
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/manual_control', methods=['POST'])
-def manual_control():
-    data = request.get_json()
-    action = data.get('action')
-    pwm = data.get('pwm', 32768)
-    try:
-        # Only set up PCA9685 for DC motors at 1000Hz (do not reset all or set freq every time)
-        pca = hardware.setup_pca9685(channel=0, frequency=1000)  # 1000Hz for DC motors
-        # Do NOT reset all or change frequency here!
-        if action == 'forward':
-            hardware.move_forward(pca, pwm)
-        elif action == 'backward':
-            hardware.move_backward(pca, pwm)
-        elif action == 'left':
-            hardware.rotate_left(pca, pwm)
-        elif action == 'right':
-            hardware.rotate_right(pca, pwm)
-        elif action == 'northwest':
-            hardware.move_northwest(pca, pwm)
-        elif action == 'northeast':
-            hardware.move_northeast(pca, pwm)
-        elif action == 'southwest':
-            hardware.move_southwest(pca, pwm)
-        elif action == 'southeast':
-            hardware.move_southeast(pca, pwm)
-        elif action == 'stop':
-            hardware.stop_motors(pca)
-        else:
-            return jsonify({'status': 'error', 'message': 'Unknown action'}), 400
-        return jsonify({'status': 'success', 'action': action})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-@app.route('/control')
-def control():
-    return render_template('control.html')
-
-# --- Endpoint: Manual Servo Arm Control ---
-@app.route('/servo_control', methods=['POST'])
-def servo_control():
-    if not control_lock.acquire(blocking=False):
-        return jsonify({'status': 'busy', 'message': 'System is busy'}), 409
-    try:
-        data = request.get_json()
-        channel = int(data.get('channel'))
-        angle = int(data.get('angle'))
-        # 1. Reset all channels at 50Hz
-        pca = hardware.setup_pca9685(channel=0, frequency=50)
-        hardware.reset_all_channels(pca)
-        # 2. Move to requested angle
-        clamped = hardware.set_servo_angle(pca, channel, angle)
-        time.sleep(0.5)
-        # 3. Move back to initial position
-        init_angle = hardware.servo_config[channel]["init"]
-        hardware.smooth_move(pca, channel, clamped, init_angle, hardware.servo_config[channel]["delay"])
-        # 4. Reset all channels again
-        hardware.reset_all_channels(pca)
-        set_status('manual')
-        return jsonify({'status': 'success', 'channel': channel, 'angle': clamped})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-    finally:
-        control_lock.release()
-        set_status('idle')
-
-# --- Endpoint: Reset All Channels ---
-@app.route('/reset_channels', methods=['POST'])
-def reset_channels():
-    if not control_lock.acquire(blocking=False):
-        return jsonify({'status': 'busy', 'message': 'System is busy'}), 409
-    try:
-        pca = hardware.setup_pca9685(channel=0)
-        hardware.reset_all_channels(pca)
-        return jsonify({'status': 'success'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-    finally:
-        control_lock.release()
-        set_status('idle')
-
-# --- Endpoint: Status ---
-@app.route('/status')
-def status():
-    return jsonify(current_status)
-
-# --- Automation Logic ---
-def automation_sequence():
-    set_status('automating')
-    try:
-        while not stop_automation_flag.is_set():
-            # 1. Move forward for 5 seconds (motors)
-            pca = hardware.setup_pca9685(channel=0, frequency=1000)
-            hardware.move_forward(pca, 32768)
-            time.sleep(5)
-            hardware.stop_motors(pca)
-            # 2. Servo arm action (safe sequence)
-            pca = hardware.setup_pca9685(channel=0, frequency=50)
-            hardware.reset_all_channels(pca)
-            hardware.smooth_move(pca, 9, 70, 20, hardware.servo_config[9]["delay"])
-            time.sleep(1)
-            hardware.smooth_move(pca, 9, 20, 70, hardware.servo_config[9]["delay"])
-            hardware.reset_all_channels(pca)
-            time.sleep(1)
-            # 3. Repeat or add more logic as needed
-    finally:
-        pca = hardware.setup_pca9685(channel=0, frequency=1000)
-        hardware.stop_motors(pca)
-        pca = hardware.setup_pca9685(channel=0, frequency=50)
-        hardware.reset_all_channels(pca)
-        set_status('idle')
-        control_lock.release()
-
-# --- Endpoint: Start/Stop Automation ---
-@app.route('/automation', methods=['POST'])
-def automation():
-    global automation_thread
-    data = request.get_json()
-    action = data.get('action')
-    if action == 'start':
-        if not control_lock.acquire(blocking=False):
-            return jsonify({'status': 'busy', 'message': 'System is busy'}), 409
-        stop_automation_flag.clear()
-        automation_thread = threading.Thread(target=automation_sequence, daemon=True)
-        automation_thread.start()
-        return jsonify({'status': 'started'})
-    elif action == 'stop':
-        stop_automation_flag.set()
-        return jsonify({'status': 'stopping'})
-    else:
-        return jsonify({'status': 'error', 'message': 'Unknown action'}), 400
-
-@app.route('/move_to_object', methods=['POST'])
-def move_to_object():
-    data = request.get_json()
-    object_name = data.get('object')
-    try:
-        # Run the arm movement in a background thread
-        threading.Thread(target=perform_object_sequence, args=(object_name,), daemon=True).start()
-        return jsonify({'status': 'started'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-@app.route('/pump_on', methods=['POST'])
-def pump_on_route():
-    try:
-        hardware.pump_on()
-        return jsonify({'status': 'on'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-@app.route('/pump_off', methods=['POST'])
-def pump_off_route():
-    try:
-        hardware.pump_off()
-        return jsonify({'status': 'off'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-if __name__ == '__main__':
-    try:
-        import eventlet
-        import eventlet.wsgi
-        socketio.run(app, host="127.0.0.1", port=5000, debug=True)
-    except Exception as e:
-        print(f"Error running server: {e}")
-    finally:
-        # No need to cleanup here as hardware is initialized per request
+        parts = nmea.split(',')
+        if nmea.startswith('$GPRMC') and parts[3] and parts[5]:
+            lat = float(parts[3][:2]) + float(parts[3][2:])/60.0
+            if parts[4] == 'S': lat = -lat
+            lng = float(parts[5][:3]) + float(parts[5][3:])/60.0
+            if parts[6] == 'W': lng = -lng
+            return {'lat': lat, 'lng': lng, 'raw': nmea}
+        elif nmea.startswith('$GPGGA') and parts[2] and parts[4]:
+            lat = float(parts[2][:2]) + float(parts[2][2:])/60.0
+            if parts[3] == 'S': lat = -lat
+            lng = float(parts[4][:3]) + float(parts[4][3:])/60.0
+            if parts[5] == 'W': lng = -lng
+            return {'lat': lat, 'lng': lng, 'raw': nmea}
+    except Exception:
         pass
+    return {'lat': None, 'lng': None, 'raw': nmea}
+
+def get_latest_gps():
+    start_gps_thread()
+    global _latest_gps
+    if _latest_gps:
+        return _latest_gps
+    return {'lat': None, 'lng': None, 'date': None, 'time': None, 'raw': None}
+
+# === Ultrasonic Sensor Readings ===
+def get_ultrasonic():
+    initialize_hardware()
+    try:
+        front = _front_sensor.distance if _front_sensor else None
+        back = _back_sensor.distance if _back_sensor else None
+        return {'front': front, 'back': back}
+    except Exception as e:
+        return {'front': None, 'back': None, 'error': str(e)}
+
+# === Camera + YOLOv8 Object Detection ===
+_yolo_model = None
+_camera = None
+
+def get_camera():
+    global _camera
+    if PiCamera is None:
+        print("[INFO] PiCamera not available on this system.")
+        return None
+    if _camera is None:
+        _camera = PiCamera()
+    return _camera
+
+def run_yolo_inference():
+    global _yolo_model
+    if YOLO is None:
+        return {'error': 'YOLOv8 not installed'}
+    cam = get_camera()
+    if cam is None:
+        return {'error': 'PiCamera not available'}
+    if _yolo_model is None:
+        _yolo_model = YOLO('yolov8n.pt')  # Use nano model for speed
+    # Capture image to a temporary file
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix='.jpg') as tmp:
+        cam.capture(tmp.name)
+        results = _yolo_model(tmp.name)
+        # Return detected objects (labels and confidences)
+        objects = []
+        for r in results:
+            for box in r.boxes:
+                cls = int(box.cls[0])
+                conf = float(box.conf[0])
+                objects.append({'class': cls, 'confidence': conf})
+        return {'objects': objects}
+
+def initialize_hardware():
+    global _i2c, _tca, _r_en1, _l_en1, _r_en2, _l_en2, _back_sensor, _front_sensor, _adc, _temp_sensor_initialized
+    
+    if _i2c is None:
+        # === Motor Enable Pins ===
+        _r_en1 = OutputDevice(17)
+        _l_en1 = OutputDevice(27)
+        _r_en2 = OutputDevice(23)
+        _l_en2 = OutputDevice(24)
+
+        _r_en1.on()
+        _l_en1.on()
+        _r_en2.on()
+        _l_en2.on()
+
+        # === I2C Setup ===
+        _i2c = busio.I2C(SCL, SDA)
+
+        # === TCA9548A Multiplexer Setup ===
+        _tca = TCA9548A(_i2c)
+
+        # === Ultrasonic Sensors ===
+        _back_sensor = DistanceSensor(echo=19, trigger=13, max_distance=4)
+        _front_sensor = DistanceSensor(echo=6, trigger=5, max_distance=4)
+
+        # === DO Sensor Setup ===
+        try:
+            _adc = Adafruit_ADS1x15.ADS1115(busnum=1)
+        except Exception as e:
+            print(f"[WARN] DO sensor not available: {e}")
+            _adc = None
+
+        # === Temperature Sensor Setup ===
+        try:
+            if not _temp_sensor_initialized:
+                # Check if modules are already loaded
+                if not os.path.exists('/sys/bus/w1/devices'):
+                    print("[INFO] Temperature sensor modules not loaded, using default temperature")
+                else:
+                    _temp_sensor_initialized = True
+        except Exception as e:
+            print(f"[WARN] Temperature sensor setup error: {e}")
+
+def select_tca_channel(channel):
+    if _i2c is None:
+        initialize_hardware()
+    _i2c.writeto(0x70, bytes([1 << channel]))
+
+# === PCA9685 Setup ===
+def setup_pca9685(channel, frequency=1000):
+    if _i2c is None:
+        initialize_hardware()
+    select_tca_channel(channel)
+    pca = PCA9685(_i2c)
+    pca.frequency = frequency
+    return pca
+
+# === PWM Control ===
+def set_pwm(pca, channel, duty):
+    pca.channels[channel].duty_cycle = duty
+
+def move_forward(pca, pwm):
+    set_pwm(pca, 0, pwm)  # Left backward
+    set_pwm(pca, 1, 0)    # Left forward off
+    set_pwm(pca, 2, 0)    # Right forward off
+    set_pwm(pca, 3, pwm)  # Right backward
+
+def move_backward(pca, pwm):
+    set_pwm(pca, 0, 0)    # Left backward off
+    set_pwm(pca, 1, pwm)  # Left forward
+    set_pwm(pca, 2, pwm)  # Right forward
+    set_pwm(pca, 3, 0)    # Right backward off
+
+def stop_motors(pca):
+    for ch in range(4):
+        set_pwm(pca, ch, 0)
+
+def rotate_left(pca, pwm):
+    set_pwm(pca, 0, pwm)  # Left backward
+    set_pwm(pca, 1, 0)
+    set_pwm(pca, 2, pwm)  # Right forward
+    set_pwm(pca, 3, 0)
+
+def rotate_right(pca, pwm):
+    set_pwm(pca, 0, 0)
+    set_pwm(pca, 1, pwm)  # Left forward
+    set_pwm(pca, 2, 0)
+    set_pwm(pca, 3, pwm)  # Right backward
+
+def move_northwest(pca, pwm):
+    set_pwm(pca, 0, int(pwm / 4))  # Left backward low
+    set_pwm(pca, 1, 0)
+    set_pwm(pca, 2, 0)
+    set_pwm(pca, 3, pwm)           # Right backward
+
+def move_northeast(pca, pwm):
+    set_pwm(pca, 0, pwm)           # Left backward
+    set_pwm(pca, 1, 0)
+    set_pwm(pca, 2, 0)
+    set_pwm(pca, 3, int(pwm / 4))  # Right backward low
+
+def move_southwest(pca, pwm):
+    set_pwm(pca, 0, 0)
+    set_pwm(pca, 1, int(pwm / 4))  # Left forward low
+    set_pwm(pca, 2, pwm)           # Right forward
+    set_pwm(pca, 3, 0)
+
+def move_southeast(pca, pwm):
+    set_pwm(pca, 0, 0)
+    set_pwm(pca, 1, pwm)           # Left forward
+    set_pwm(pca, 2, int(pwm / 4))  # Right forward low
+    set_pwm(pca, 3, 0)
+
+# === pH Sensor ===
+def read_ph():
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    with _ads_lock:
+        channel = AnalogIn(_ads, 2)  # ADS.P2
+        voltage = channel.voltage
+        pH_Value = (voltage - 2.5) * 3.5 + 7.0
+        return {'ph': pH_Value, 'voltage': voltage}
+
+# === DO Sensor ===
+def read_do():
+    import smbus
+    import Adafruit_ADS1x15
+    TCA_ADDRESS = 0x70
+    TCA_CHANNEL = 1
+    ADS_CHANNEL = 1  # A1/P1
+    GAIN = 1
+    VREF = 5000
+    ADC_RES = 32767
+
+    try:
+        i2c_bus = smbus.SMBus(1)
+        adc = Adafruit_ADS1x15.ADS1115(busnum=1)
+
+        # Re-select TCA channel 1 before each read
+        i2c_bus.write_byte(TCA_ADDRESS, 1 << TCA_CHANNEL)
+
+        raw = adc.read_adc(ADS_CHANNEL, gain=GAIN)
+        voltage = (raw / ADC_RES) * VREF  # Convert to millivolts
+
+        print(f"[DEBUG] DO P1 -> Raw ADC: {raw} | Voltage: {voltage:.2f} mV")
+        return {'do': voltage, 'voltage': voltage, 'raw': raw}
+    except OSError as e:
+        print("[ERROR] I2C communication error. Check wiring and channel selection.")
+        print(e)
+        return {'do': None, 'voltage': None, 'error': str(e)}
+    except Exception as e:
+        print(f"[WARN] DO sensor error: {e}")
+        return {'do': None, 'voltage': None, 'error': str(e)}
+
+# === Turbidity Sensor ===
+latest_turbidity = None
+
+def turbidity_reader():
+    global latest_turbidity
+    while True:
+        try:
+            voltage = read_turbidity()
+            latest_turbidity = voltage
+            print(voltage)
+        except Exception as e:
+            latest_turbidity = None
+            print(f"Error reading turbidity: {str(e)}")
+        import time; time.sleep(1)
+
+def start_turbidity_thread():
+    if not hasattr(start_turbidity_thread, "started"):
+        threading.Thread(target=turbidity_reader, daemon=True).start()
+        start_turbidity_thread.started = True
+
+def get_latest_turbidity():
+    start_turbidity_thread()
+    return latest_turbidity
+
+# === Temperature Sensor ===
+def read_temp():
+    try:
+        with _temp_sensor_lock:
+            device_folders = glob.glob('/sys/bus/w1/devices/28*')
+            if not device_folders:
+                return {'temp': None, 'error': 'No sensor found'}
+            device_file = device_folders[0] + '/w1_slave'
+            with open(device_file, 'r') as f:
+                lines = f.readlines()
+            if len(lines) < 2 or 'YES' not in lines[0]:
+                return {'temp': None, 'error': 'Invalid sensor response'}
+            temp_output = lines[1].find('t=')
+            if temp_output == -1:
+                return {'temp': None, 'error': 'Temperature data not found'}
+            temp_string = lines[1][temp_output+2:]
+            temp_c = float(temp_string) / 1000.0
+            if -55 <= temp_c <= 125:
+                return {'temp': temp_c}
+            else:
+                return {'temp': None, 'error': 'Temperature out of valid range'}
+    except Exception as e:
+        return {'temp': None, 'error': str(e)}
+
+# === Cleanup Function ===
+def cleanup(pca):
+    stop_motors(pca)
+    pca.deinit()
+    if _r_en1: _r_en1.off()
+    if _l_en1: _l_en1.off()
+    if _r_en2: _r_en2.off()
+    if _l_en2: _l_en2.off()
+
+# Initialize I2C, TCA9548A, and ADS1115 only once
+def initialize_ads():
+    global _i2c, _tca, _ads
+    if _i2c is None or _tca is None or _ads is None:
+        import board, busio
+        import adafruit_ads1x15.ads1115 as ADS
+        from adafruit_tca9548a import TCA9548A
+        _i2c = busio.I2C(board.SCL, board.SDA)
+        _tca = TCA9548A(_i2c)
+        ads_i2c = _tca[1]
+        _ads = ADS.ADS1115(ads_i2c)
+
+# Helper to select multiplexer channel
+def select_ads_channel(channel):
+    initialize_ads()
+    with _ads_lock:
+        # Select channel 1 on the TCA9548A (where ADS1115 is connected)
+        ads_i2c = _tca[1]
+        # Re-initialize ADS1115 for each read to ensure correct channel
+        from adafruit_ads1x15 import ads1115 as ADS
+        _ads = ADS.ADS1115(ads_i2c)
+        from adafruit_ads1x15.analog_in import AnalogIn
+        return AnalogIn(_ads, channel)
+
+# Turbidity (A0)
+def read_turbidity():
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    with _ads_lock:
+        channel = AnalogIn(_ads, 0)  # ADS.P0
+        voltage = channel.voltage
+        return voltage
+
+# pH Level (A2)
+def read_ph():
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    with _ads_lock:
+        channel = AnalogIn(_ads, 2)  # ADS.P2
+        voltage = channel.voltage
+        pH_Value = (voltage - 2.5) * 3.5 + 7.0
+        return {'ph': pH_Value, 'voltage': voltage}
+
+# Water Level (A3)
+def read_water_level():
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    with _ads_lock:
+        channel = AnalogIn(_ads, 3)  # ADS.P3
+        voltage = channel.voltage
+        return channel.value, voltage
+
+# === Servo Arm Control ===
+servo_config = {
+    9: {"min": 20, "max": 70, "init": 70, "delay": 0.03},
+    10: {"min": 0, "max": 100, "init": 100, "delay": 0.08},
+    11: {"min": 0, "max": 45, "init": 0, "delay": 0.1},
+}
+
+def angle_to_pwm(angle):
+    pulse_length_us = 500 + (angle / 180) * 2000
+    duty_cycle = int((pulse_length_us / 20000) * 65535)
+    return duty_cycle
+
+def set_servo_angle(pca, channel, angle):
+    cfg = servo_config[channel]
+    clamped = max(cfg["min"], min(angle, cfg["max"]))
+    pca.channels[channel].duty_cycle = angle_to_pwm(clamped)
+    return clamped
+
+# Track current angles for all channels
+current_angles = {9: servo_config[9]["init"], 10: servo_config[10]["init"], 11: servo_config[11]["init"]}
+
+def smooth_move(pca, channel, target, delay):
+    global current_angles
+    current = current_angles[channel]
+    step = 1 if target > current else -1
+    for angle in range(current, target + step, step):
+        set_servo_angle(pca, channel, angle)
+        time.sleep(delay)
+    current_angles[channel] = target
+    return target
+
+def move_channels(pca, targets):
+    threads = []
+    for ch in targets:
+        t = threading.Thread(target=smooth_move, args=(pca, ch, targets[ch], servo_config[ch]["delay"]))
+        threads.append(t)
+        t.start()
+    for t in threads:
+        t.join()
+
+def reset_all_channels(pca):
+    for ch in range(16):
+        pca.channels[ch].duty_cycle = 0
+
+# === Utility Patterns for Servo and DC Motor Control ===
+
+def reset_all_servos(pca):
+    """Set all servo channels to their initial position (from servo_config)."""
+    for channel, cfg in servo_config.items():
+        set_servo_angle(pca, channel, cfg["init"])
+
+def set_servo_freq(pca, freq):
+    """Set the PWM frequency for the servo controller."""
+    pca.frequency = freq
+
+def move_servo(pca, channel, angle):
+    """Move a servo to a specific angle."""
+    return set_servo_angle(pca, channel, angle)
+
+def servo_go_back_init(pca, channel):
+    """Move a servo back to its initial position."""
+    cfg = servo_config[channel]
+    return set_servo_angle(pca, channel, cfg["init"])
+
+# --- DC Motor Patterns ---
+def reset_all_motors(pca):
+    """Stop all DC motors."""
+    stop_motors(pca)
+
+def set_motor_freq(pca, freq):
+    """Set the PWM frequency for the DC motor controller."""
+    pca.frequency = freq
+
+def move_dc_motor(pca, direction, pwm):
+    """Move the DC motor in a direction with a given PWM value.
+    direction: 'forward', 'backward', 'left', 'right', 'nw', 'ne', 'sw', 'se'
+    """
+    if direction == 'forward':
+        move_forward(pca, pwm)
+    elif direction == 'backward':
+        move_backward(pca, pwm)
+    elif direction == 'left':
+        rotate_left(pca, pwm)
+    elif direction == 'right':
+        rotate_right(pca, pwm)
+    elif direction == 'nw':
+        move_northwest(pca, pwm)
+    elif direction == 'ne':
+        move_northeast(pca, pwm)
+    elif direction == 'sw':
+        move_southwest(pca, pwm)
+    elif direction == 'se':
+        move_southeast(pca, pwm)
+    else:
+        stop_motors(pca)
+
+# Object positions for each object
+object_positions = {
+    "plant_pots": {9: 60, 10: 45, 11: 10},
+    "bamboo_stump": {9: 30, 10: 75, 11: 10},
+    "tires": {9: 60, 10: 45, 11: 10},
+    "bamboo_planter": {9: 30, 10: 75, 11: 10}
+}
+
+straight_position = {9: 70, 10: 0, 11: 0}  # Adjust as needed
+rest_position = {ch: servo_config[ch]["init"] for ch in servo_config}
+
+def move_channels_11_then_10(pca, targets):
+    # Move channel 11 first, if present
+    if 11 in targets:
+        smooth_move(pca, 11, targets[11], servo_config[11]["delay"])
+    # Then move other channels (excluding 11)
+    for ch in targets:
+        if ch != 11:
+            smooth_move(pca, ch, targets[ch], servo_config[ch]["delay"])
+
+def move_channels_9_10_11(pca, targets):
+    # Move channel 9 first, then 10, then 11
+    if 9 in targets:
+        smooth_move(pca, 9, targets[9], servo_config[9]["delay"])
+    if 10 in targets:
+        smooth_move(pca, 10, targets[10], servo_config[10]["delay"])
+    if 11 in targets:
+        smooth_move(pca, 11, targets[11], servo_config[11]["delay"])
+
+def perform_object_sequence(object_name):
+    pca = setup_pca9685(channel=0, frequency=50)
+    # Step 1: Reset all servos to rest
+    move_channels_9_10_11(pca, rest_position)
+    time.sleep(0.5)
+    # Step 2: Set frequency (already set above)
+    set_servo_freq(pca, 50)
+    # Step 3: Move to straight position
+    move_channels(pca, straight_position)
+    time.sleep(0.5)
+    # Step 4: Move to object position
+    if object_name in object_positions:
+        move_channels_11_then_10(pca, object_positions[object_name])
+    else:
+        print(f"Unknown object: {object_name}")
+        pca.deinit()
+        return
+    # Step 5: Hold
+    time.sleep(2)
+
+    # --- New: Sensor check and pump logic ---
+    criteria_met = False
+    recorded_data = None
+    start_time = time.time()
+    while time.time() - start_time < 5:
+        try:
+            water_level_raw, water_level_voltage = read_water_level()
+            ph_data = read_ph()
+            turbidity = read_turbidity()
+            temp_data = read_temp()
+            gps = get_latest_gps()
+            now = datetime.datetime.now()
+
+            # Criteria
+            water_level_ok = water_level_voltage is not None and water_level_voltage > 0.2  # 'yes'
+            ph_ok = ph_data and ph_data.get('ph') is not None and 5.26 <= ph_data['ph'] <= 8.41
+            turbidity_ok = turbidity is not None and turbidity >= 0.29
+            temp_ok = temp_data and temp_data.get('temp') is not None and 26.80 <= temp_data['temp'] <= 33.20
+
+            if water_level_ok and ph_ok and turbidity_ok and temp_ok:
+                criteria_met = True
+                recorded_data = {
+                    'water_level': water_level_voltage,
+                    'ph': ph_data['ph'],
+                    'turbidity': turbidity,
+                    'temperature': temp_data['temp'],
+                    'lat': gps.get('lat'),
+                    'lng': gps.get('lng'),
+                    'date': now.strftime('%Y-%m-%d'),
+                    'time': now.strftime('%H:%M:%S')
+                }
+                break
+        except Exception as e:
+            print(f"[ERROR] Sensor read: {e}")
+        time.sleep(1)
+
+    if criteria_met:
+        try:
+            pump_on()
+            time.sleep(2)
+            pump_off()
+        except Exception as e:
+            print(f"[ERROR] Pump control: {e}")
+        try:
+            from app import main
+            main.save_spray_event(recorded_data)
+        except Exception as e:
+            print(f"[ERROR] Saving spray event: {e}")
+
+    # Step 6: Return to straight
+    move_channels(pca, straight_position)
+    time.sleep(0.5)
+    # Step 7: Return to rest
+    move_channels_9_10_11(pca, rest_position)
+    time.sleep(0.5)
+    reset_all_channels(pca)  # Reset all 16 channels to 0 (servos will lose holding torque)
+    pca.deinit()
+
+def init_pump_gpio():
+    global _pump_gpio_handle
+    if _pump_gpio_handle is None:
+        _pump_gpio_handle = lgpio.gpiochip_open(0)
+        lgpio.gpio_claim_output(_pump_gpio_handle, RELAY_PIN)
+        lgpio.gpio_write(_pump_gpio_handle, RELAY_PIN, 1)  # Ensure OFF
+
+def pump_on():
+    init_pump_gpio()
+    lgpio.gpio_write(_pump_gpio_handle, RELAY_PIN, 0)
+    print("Water pump is ON")
+
+def pump_off():
+    init_pump_gpio()
+    lgpio.gpio_write(_pump_gpio_handle, RELAY_PIN, 1)
+    print("Water pump is OFF") 
