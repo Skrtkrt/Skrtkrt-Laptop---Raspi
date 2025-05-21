@@ -651,25 +651,35 @@ def perform_object_sequence(object_name):
     while time.time() - start_time < 5:
         try:
             water_level_raw, water_level_voltage = read_water_level()
+            if water_level_voltage is None or water_level_voltage <= 0.2:
+                # No water detected, skip all other checks
+                print("[INFO] No water detected. Skipping sensor validation and spray.")
+                break
+            # Water detected, check other sensors
             ph_data = read_ph()
             turbidity = read_turbidity()
             temp_data = read_temp()
             gps = get_latest_gps()
             now = datetime.datetime.now()
 
-            # Criteria
-            water_level_ok = water_level_voltage is not None and water_level_voltage > 0.2  # 'yes'
-            ph_ok = ph_data and ph_data.get('ph') is not None and 5.26 <= ph_data['ph'] <= 8.41
-            turbidity_ok = turbidity is not None and turbidity >= 0.29
-            temp_ok = temp_data and temp_data.get('temp') is not None and 26.80 <= temp_data['temp'] <= 33.20
+            # Count how many requirements are met (out of 4)
+            met = 0
+            if ph_data and ph_data.get('ph') is not None and 5.26 <= ph_data['ph'] <= 8.41:
+                met += 1
+            if turbidity is not None and turbidity >= 0.29:
+                met += 1
+            if temp_data and temp_data.get('temp') is not None and 26.80 <= temp_data['temp'] <= 33.20:
+                met += 1
+            if gps and gps.get('lat') is not None and gps.get('lng') is not None:
+                met += 1
 
-            if water_level_ok and ph_ok and turbidity_ok and temp_ok:
+            if met >= 3:
                 criteria_met = True
                 recorded_data = {
                     'water_level': water_level_voltage,
-                    'ph': ph_data['ph'],
+                    'ph': ph_data['ph'] if ph_data else None,
                     'turbidity': turbidity,
-                    'temperature': temp_data['temp'],
+                    'temperature': temp_data['temp'] if temp_data else None,
                     'lat': gps.get('lat'),
                     'lng': gps.get('lng'),
                     'date': now.strftime('%Y-%m-%d'),
@@ -693,10 +703,9 @@ def perform_object_sequence(object_name):
         except Exception as e:
             print(f"[ERROR] Saving spray event: {e}")
 
-    # Step 6: Return to straight
+    # Always complete the arm sequence
     move_channels(pca, straight_position)
     time.sleep(0.5)
-    # Step 7: Return to rest
     move_channels_9_10_11(pca, rest_position)
     time.sleep(0.5)
     reset_all_channels(pca)  # Reset all 16 channels to 0 (servos will lose holding torque)
