@@ -452,6 +452,12 @@
         }
 
         let gpsMarker = null;
+        const robotIcon = L.icon({
+            iconUrl: '/static/images/rover.png',
+            iconSize: [36, 36],
+            iconAnchor: [18, 36],
+            popupAnchor: [0, -36]
+        });
 
         function updateGPSOnMap() {
             fetch('/api/gps')
@@ -459,7 +465,7 @@
                 .then(gps => {
                     if (gps && gps.lat && gps.lng) {
                         if (!gpsMarker) {
-                            gpsMarker = L.marker([gps.lat, gps.lng]).addTo(map);
+                            gpsMarker = L.marker([gps.lat, gps.lng], { icon: robotIcon, title: 'Rover' }).addTo(map);
                         } else {
                             gpsMarker.setLatLng([gps.lat, gps.lng]);
                         }
