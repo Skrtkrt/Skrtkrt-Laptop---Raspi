@@ -626,90 +626,88 @@ def move_channels_9_10_11(pca, targets):
 
 def perform_object_sequence(object_name):
     pca = setup_pca9685(channel=0, frequency=50)
-    # Step 1: Reset all servos to rest
-    move_channels_9_10_11(pca, rest_position)
-    time.sleep(0.5)
-    # Step 2: Set frequency (already set above)
-    set_servo_freq(pca, 50)
-    # Step 3: Move to straight position
-    move_channels(pca, straight_position)
-    time.sleep(0.5)
-    # Step 4: Move to object position
-    if object_name in object_positions:
-        move_channels_11_then_10(pca, object_positions[object_name])
-    else:
-        print(f"Unknown object: {object_name}")
+    try:
+        # Step 1: Reset all servos to rest
+        move_channels_9_10_11(pca, rest_position)
+        time.sleep(0.5)
+        # Step 2: Set frequency (already set above)
+        set_servo_freq(pca, 50)
+        # Step 3: Move to straight position
+        move_channels(pca, straight_position)
+        time.sleep(0.5)
+        # Step 4: Move to object position
+        if object_name in object_positions:
+            move_channels_11_then_10(pca, object_positions[object_name])
+        else:
+            print(f"Unknown object: {object_name}")
+            return
+        # Step 5: Hold
+        time.sleep(2)
+
+        # --- Sensor check and pump logic ---
+        criteria_met = False
+        recorded_data = None
+        start_time = time.time()
+        while time.time() - start_time < 5:
+            try:
+                water_level_raw, water_level_voltage = read_water_level()
+                if water_level_voltage is None or water_level_voltage <= 0.2:
+                    print("[INFO] No water detected. Skipping sensor validation and spray.")
+                    break
+                # Water detected, check other sensors
+                ph_data = read_ph()
+                turbidity = read_turbidity()
+                temp_data = read_temp()
+                gps = get_latest_gps()
+                now = datetime.datetime.now()
+
+                # Count how many requirements are met (out of 4)
+                met = 0
+                if ph_data and ph_data.get('ph') is not None and 5.26 <= ph_data['ph'] <= 8.41:
+                    met += 1
+                if turbidity is not None and turbidity >= 0.29:
+                    met += 1
+                if temp_data and temp_data.get('temp') is not None and 26.80 <= temp_data['temp'] <= 33.20:
+                    met += 1
+                if gps and gps.get('lat') is not None and gps.get('lng') is not None:
+                    met += 1
+
+                if met >= 3:
+                    criteria_met = True
+                    recorded_data = {
+                        'water_level': water_level_voltage,
+                        'ph': ph_data['ph'] if ph_data else None,
+                        'turbidity': turbidity,
+                        'temperature': temp_data['temp'] if temp_data else None,
+                        'lat': gps.get('lat'),
+                        'lng': gps.get('lng'),
+                        'date': now.strftime('%Y-%m-%d'),
+                        'time': now.strftime('%H:%M:%S')
+                    }
+                    break
+            except Exception as e:
+                print(f"[ERROR] Sensor read: {e}")
+            time.sleep(1)
+
+        if criteria_met:
+            try:
+                pump_on()
+                time.sleep(2)
+                pump_off()
+            except Exception as e:
+                print(f"[ERROR] Pump control: {e}")
+            try:
+                from app import main
+                main.save_spray_event(recorded_data)
+            except Exception as e:
+                print(f"[ERROR] Saving spray event: {e}")
+    finally:
+        move_channels(pca, straight_position)
+        time.sleep(0.5)
+        move_channels_9_10_11(pca, rest_position)
+        time.sleep(0.5)
+        reset_all_channels(pca)  # Reset all 16 channels to 0 (servos will lose holding torque)
         pca.deinit()
-        return
-    # Step 5: Hold
-    time.sleep(2)
-
-    # --- New: Sensor check and pump logic ---
-    criteria_met = False
-    recorded_data = None
-    start_time = time.time()
-    while time.time() - start_time < 5:
-        try:
-            water_level_raw, water_level_voltage = read_water_level()
-            if water_level_voltage is None or water_level_voltage <= 0.2:
-                # No water detected, skip all other checks
-                print("[INFO] No water detected. Skipping sensor validation and spray.")
-                break
-            # Water detected, check other sensors
-            ph_data = read_ph()
-            turbidity = read_turbidity()
-            temp_data = read_temp()
-            gps = get_latest_gps()
-            now = datetime.datetime.now()
-
-            # Count how many requirements are met (out of 4)
-            met = 0
-            if ph_data and ph_data.get('ph') is not None and 5.26 <= ph_data['ph'] <= 8.41:
-                met += 1
-            if turbidity is not None and turbidity >= 0.29:
-                met += 1
-            if temp_data and temp_data.get('temp') is not None and 26.80 <= temp_data['temp'] <= 33.20:
-                met += 1
-            if gps and gps.get('lat') is not None and gps.get('lng') is not None:
-                met += 1
-
-            if met >= 3:
-                criteria_met = True
-                recorded_data = {
-                    'water_level': water_level_voltage,
-                    'ph': ph_data['ph'] if ph_data else None,
-                    'turbidity': turbidity,
-                    'temperature': temp_data['temp'] if temp_data else None,
-                    'lat': gps.get('lat'),
-                    'lng': gps.get('lng'),
-                    'date': now.strftime('%Y-%m-%d'),
-                    'time': now.strftime('%H:%M:%S')
-                }
-                break
-        except Exception as e:
-            print(f"[ERROR] Sensor read: {e}")
-        time.sleep(1)
-
-    if criteria_met:
-        try:
-            pump_on()
-            time.sleep(2)
-            pump_off()
-        except Exception as e:
-            print(f"[ERROR] Pump control: {e}")
-        try:
-            from app import main
-            main.save_spray_event(recorded_data)
-        except Exception as e:
-            print(f"[ERROR] Saving spray event: {e}")
-
-    # Always complete the arm sequence
-    move_channels(pca, straight_position)
-    time.sleep(0.5)
-    move_channels_9_10_11(pca, rest_position)
-    time.sleep(0.5)
-    reset_all_channels(pca)  # Reset all 16 channels to 0 (servos will lose holding torque)
-    pca.deinit()
 
 def init_pump_gpio():
     global _pump_gpio_handle
