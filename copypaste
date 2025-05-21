@@ -41,7 +41,6 @@ _temp_sensor_initialized = False
 # Constants for pH sensor
 PH_7_VOLTAGE = 2.50
 PH_SLOPE = -5.7
-PH_OFFSET = 18.3
 
 # Constants for DO sensor
 GAIN = 1
@@ -218,7 +217,7 @@ def run_yolo_inference():
 
 def initialize_hardware():
     global _i2c, _tca, _r_en1, _l_en1, _r_en2, _l_en2, _back_sensor, _front_sensor, _adc, _temp_sensor_initialized
-    print('[DEBUG] Initializing hardware...')
+    
     if _i2c is None:
         # === Motor Enable Pins ===
         _r_en1 = OutputDevice(17)
@@ -233,11 +232,9 @@ def initialize_hardware():
 
         # === I2C Setup ===
         _i2c = busio.I2C(SCL, SDA)
-        print('[DEBUG] I2C bus initialized')
 
         # === TCA9548A Multiplexer Setup ===
         _tca = TCA9548A(_i2c)
-        print('[DEBUG] TCA9548A multiplexer initialized')
 
         # === Ultrasonic Sensors ===
         _back_sensor = DistanceSensor(echo=19, trigger=13, max_distance=4)
@@ -268,7 +265,6 @@ def select_tca_channel(channel):
 
 # === PCA9685 Setup ===
 def setup_pca9685(channel, frequency=1000):
-    print(f'[DEBUG] Setting up PCA9685 on channel {channel} with frequency {frequency}')
     if _i2c is None:
         initialize_hardware()
     select_tca_channel(channel)
@@ -278,91 +274,59 @@ def setup_pca9685(channel, frequency=1000):
 
 # === PWM Control ===
 def set_pwm(pca, channel, duty):
-    print(f'[DEBUG] set_pwm: channel={channel}, duty={duty}')
     pca.channels[channel].duty_cycle = duty
 
 def move_forward(pca, pwm):
-    print(f'[DEBUG] move_forward: pwm={pwm}')
     set_pwm(pca, 0, pwm)  # Left backward
     set_pwm(pca, 1, 0)    # Left forward off
     set_pwm(pca, 2, 0)    # Right forward off
     set_pwm(pca, 3, pwm)  # Right backward
 
 def move_backward(pca, pwm):
-    print(f'[DEBUG] move_backward: pwm={pwm}')
     set_pwm(pca, 0, 0)    # Left backward off
     set_pwm(pca, 1, pwm)  # Left forward
     set_pwm(pca, 2, pwm)  # Right forward
     set_pwm(pca, 3, 0)    # Right backward off
 
 def stop_motors(pca):
-    print('[DEBUG] stop_motors')
     for ch in range(4):
         set_pwm(pca, ch, 0)
 
 def rotate_left(pca, pwm):
-    print(f'[DEBUG] rotate_left: pwm={pwm}')
     set_pwm(pca, 0, pwm)  # Left backward
     set_pwm(pca, 1, 0)
     set_pwm(pca, 2, pwm)  # Right forward
     set_pwm(pca, 3, 0)
 
 def rotate_right(pca, pwm):
-    print(f'[DEBUG] rotate_right: pwm={pwm}')
     set_pwm(pca, 0, 0)
     set_pwm(pca, 1, pwm)  # Left forward
     set_pwm(pca, 2, 0)
     set_pwm(pca, 3, pwm)  # Right backward
 
 def move_northwest(pca, pwm):
-    print(f'[DEBUG] move_northwest: pwm={pwm}')
     set_pwm(pca, 0, int(pwm / 4))  # Left backward low
     set_pwm(pca, 1, 0)
     set_pwm(pca, 2, 0)
     set_pwm(pca, 3, pwm)           # Right backward
 
 def move_northeast(pca, pwm):
-    print(f'[DEBUG] move_northeast: pwm={pwm}')
     set_pwm(pca, 0, pwm)           # Left backward
     set_pwm(pca, 1, 0)
     set_pwm(pca, 2, 0)
     set_pwm(pca, 3, int(pwm / 4))  # Right backward low
 
 def move_southwest(pca, pwm):
-    print(f'[DEBUG] move_southwest: pwm={pwm}')
     set_pwm(pca, 0, 0)
     set_pwm(pca, 1, int(pwm / 4))  # Left forward low
     set_pwm(pca, 2, pwm)           # Right forward
     set_pwm(pca, 3, 0)
 
 def move_southeast(pca, pwm):
-    print(f'[DEBUG] move_southeast: pwm={pwm}')
     set_pwm(pca, 0, 0)
     set_pwm(pca, 1, pwm)           # Left forward
     set_pwm(pca, 2, int(pwm / 4))  # Right forward low
     set_pwm(pca, 3, 0)
-
-# === pH Sensor Calibration ---
-def calibrate_ph_sensor():
-    """Guide the user through pH sensor calibration and print the slope and offset."""
-    from adafruit_ads1x15.analog_in import AnalogIn
-    initialize_ads()
-    input("Place the pH probe in pH 7.00 buffer solution and press Enter...")
-    with _ads_lock:
-        channel = AnalogIn(_ads, 2)
-        v7 = channel.voltage
-        print(f"[CALIBRATION] Voltage in pH 7.00 buffer: {v7:.4f} V")
-    input("Rinse the probe, place it in pH 4.00 buffer solution and press Enter...")
-    with _ads_lock:
-        channel = AnalogIn(_ads, 2)
-        v4 = channel.voltage
-        print(f"[CALIBRATION] Voltage in pH 4.00 buffer: {v4:.4f} V")
-    slope = (7.00 - 4.00) / (v7 - v4)
-    offset = 7.00 - (slope * v7)
-    print(f"[CALIBRATION] Calculated slope: {slope:.4f}")
-    print(f"[CALIBRATION] Calculated offset: {offset:.4f}")
-    print("Update PH_SLOPE and PH_OFFSET in your code with these values for accurate readings.")
-    return slope, offset
 
 # === pH Sensor ===
 def read_ph():
@@ -371,7 +335,7 @@ def read_ph():
     with _ads_lock:
         channel = AnalogIn(_ads, 2)  # ADS.P2
         voltage = channel.voltage
-        pH_Value = PH_SLOPE * voltage + PH_OFFSET
+        pH_Value = (voltage - 2.5) * 3.5 + 7.0
         return {'ph': pH_Value, 'voltage': voltage}
 
 # === DO Sensor ===
@@ -385,30 +349,18 @@ def read_do():
     VREF = 5000
     ADC_RES = 32767
 
-    # Calibration range (example values)
-    MIN_VOLTAGE_DO = 400  # mV at 0.5%
-    MAX_VOLTAGE_DO = 2000  # mV at 2.6%
-
     try:
         i2c_bus = smbus.SMBus(1)
         adc = Adafruit_ADS1x15.ADS1115(busnum=1)
 
-        # Select TCA channel
+        # Re-select TCA channel 1 before each read
         i2c_bus.write_byte(TCA_ADDRESS, 1 << TCA_CHANNEL)
 
         raw = adc.read_adc(ADS_CHANNEL, gain=GAIN)
         voltage = (raw / ADC_RES) * VREF  # Convert to millivolts
 
-        # Map voltage to % DO
-        if voltage < MIN_VOLTAGE_DO:
-            do_percent = 0.5
-        elif voltage > MAX_VOLTAGE_DO:
-            do_percent = 2.6
-        else:
-            do_percent = 0.5 + (voltage - MIN_VOLTAGE_DO) * (2.6 - 0.5) / (MAX_VOLTAGE_DO - MIN_VOLTAGE_DO)
-
-        print(f"[DEBUG] DO P1 -> Raw ADC: {raw} | Voltage: {voltage:.2f} mV | DO: {do_percent:.2f}%")
-        return {'do': do_percent, 'voltage': voltage, 'raw': raw}
+        print(f"[DEBUG] DO P1 -> Raw ADC: {raw} | Voltage: {voltage:.2f} mV")
+        return {'do': voltage, 'voltage': voltage, 'raw': raw}
     except OSError as e:
         print("[ERROR] I2C communication error. Check wiring and channel selection.")
         print(e)
@@ -504,17 +456,18 @@ def read_turbidity():
     initialize_ads()
     with _ads_lock:
         channel = AnalogIn(_ads, 0)  # ADS.P0
-        voltage = channel.voltage * 1000  # Convert V to mV
-        # Calibration range
-        MIN_VOLTAGE_TURBIDITY = 300   # mV ? 0.29 NTU
-        MAX_VOLTAGE_TURBIDITY = 4300  # mV ? 731.00 NTU
-        if voltage < MIN_VOLTAGE_TURBIDITY:
-            turbidity = 0.29
-        elif voltage > MAX_VOLTAGE_TURBIDITY:
-            turbidity = 731.00
-        else:
-            turbidity = 0.29 + (voltage - MIN_VOLTAGE_TURBIDITY) * (731.00 - 0.29) / (MAX_VOLTAGE_TURBIDITY - MIN_VOLTAGE_TURBIDITY)
-        return turbidity
+        voltage = channel.voltage
+        return voltage
+
+# pH Level (A2)
+def read_ph():
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    with _ads_lock:
+        channel = AnalogIn(_ads, 2)  # ADS.P2
+        voltage = channel.voltage
+        pH_Value = (voltage - 2.5) * 3.5 + 7.0
+        return {'ph': pH_Value, 'voltage': voltage}
 
 # Water Level (A3)
 def read_water_level():
@@ -651,42 +604,82 @@ def move_channels_9_10_11(pca, targets):
         smooth_move(pca, 11, targets[11], servo_config[11]["delay"])
 
 def perform_object_sequence(object_name):
-    print(f'[DEBUG] === BEGIN perform_object_sequence for {object_name} ===')
     pca = setup_pca9685(channel=0, frequency=50)
-    try:
-        print('[DEBUG] Step 1: Reset all servos to rest')
-        move_channels_9_10_11(pca, rest_position)
-        time.sleep(0.5)
-        print('[DEBUG] Step 2: Set frequency to 50Hz')
-        set_servo_freq(pca, 50)
-        print('[DEBUG] Step 3: Move to straight position')
-        move_channels(pca, straight_position)
-        time.sleep(0.5)
-        print('[DEBUG] Step 4: Move to object position')
-        if object_name in object_positions:
-            move_channels_11_then_10(pca, object_positions[object_name])
-        else:
-            print(f"[ERROR] Unknown object: {object_name}")
-            return
-        print('[DEBUG] Step 5: Hold at object position')
-        time.sleep(2)
-        print('[DEBUG] Step 6: Pump ON (no sensor check)')
-        pump_on()
-        time.sleep(2)
-        print('[DEBUG] Step 7: Pump OFF')
-        pump_off()
-    finally:
-        print('[DEBUG] Arm cleanup: moving to straight')
-        move_channels(pca, straight_position)
-        time.sleep(0.5)
-        print('[DEBUG] Arm cleanup: moving to rest')
-        move_channels_9_10_11(pca, rest_position)
-        time.sleep(0.5)
-        print('[DEBUG] Arm cleanup: resetting all channels')
-        reset_all_channels(pca)
-        print('[DEBUG] Arm cleanup: deinit PCA9685')
+    # Step 1: Reset all servos to rest
+    move_channels_9_10_11(pca, rest_position)
+    time.sleep(0.5)
+    # Step 2: Set frequency (already set above)
+    set_servo_freq(pca, 50)
+    # Step 3: Move to straight position
+    move_channels(pca, straight_position)
+    time.sleep(0.5)
+    # Step 4: Move to object position
+    if object_name in object_positions:
+        move_channels_11_then_10(pca, object_positions[object_name])
+    else:
+        print(f"Unknown object: {object_name}")
         pca.deinit()
-    print(f'[DEBUG] === END perform_object_sequence for {object_name} ===')
+        return
+    # Step 5: Hold
+    time.sleep(2)
+
+    # --- New: Sensor check and pump logic ---
+    criteria_met = False
+    recorded_data = None
+    start_time = time.time()
+    while time.time() - start_time < 5:
+        try:
+            water_level_raw, water_level_voltage = read_water_level()
+            ph_data = read_ph()
+            turbidity = read_turbidity()
+            temp_data = read_temp()
+            gps = get_latest_gps()
+            now = datetime.datetime.now()
+
+            # Criteria
+            water_level_ok = water_level_voltage is not None and water_level_voltage > 0.2  # 'yes'
+            ph_ok = ph_data and ph_data.get('ph') is not None and 5.26 <= ph_data['ph'] <= 8.41
+            turbidity_ok = turbidity is not None and turbidity >= 0.29
+            temp_ok = temp_data and temp_data.get('temp') is not None and 26.80 <= temp_data['temp'] <= 33.20
+
+            if water_level_ok and ph_ok and turbidity_ok and temp_ok:
+                criteria_met = True
+                recorded_data = {
+                    'water_level': water_level_voltage,
+                    'ph': ph_data['ph'],
+                    'turbidity': turbidity,
+                    'temperature': temp_data['temp'],
+                    'lat': gps.get('lat'),
+                    'lng': gps.get('lng'),
+                    'date': now.strftime('%Y-%m-%d'),
+                    'time': now.strftime('%H:%M:%S')
+                }
+                break
+        except Exception as e:
+            print(f"[ERROR] Sensor read: {e}")
+        time.sleep(1)
+
+    if criteria_met:
+        try:
+            pump_on()
+            time.sleep(2)
+            pump_off()
+        except Exception as e:
+            print(f"[ERROR] Pump control: {e}")
+        try:
+            from app import main
+            main.save_spray_event(recorded_data)
+        except Exception as e:
+            print(f"[ERROR] Saving spray event: {e}")
+
+    # Step 6: Return to straight
+    move_channels(pca, straight_position)
+    time.sleep(0.5)
+    # Step 7: Return to rest
+    move_channels_9_10_11(pca, rest_position)
+    time.sleep(0.5)
+    reset_all_channels(pca)  # Reset all 16 channels to 0 (servos will lose holding torque)
+    pca.deinit()
 
 def init_pump_gpio():
     global _pump_gpio_handle
