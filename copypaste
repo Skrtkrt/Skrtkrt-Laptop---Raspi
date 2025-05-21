@@ -409,7 +409,6 @@
                 handlePointSelection(pointToSet, e.latlng);
                 exitPointSettingMode();
             } else if (addCustomPointMode) {
-                // Immediately send move command to backend with clicked coordinates
                 fetch('/move_rover', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -421,14 +420,7 @@
                 document.getElementById('addCustomPointBtn').textContent = 'Add Custom Point';
                 map.getContainer().style.cursor = '';
             } else {
-                // If not in docking mode and not selecting a point, send move command
-                fetch('/move_rover', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ lat: e.latlng.lat, lng: e.latlng.lng })
-                }).then(res => res.json()).then(data => {
-                    alert('Rover moving to: ' + data.lat + ', ' + data.lng);
-                });
+                goToLatLng(e.latlng.lat, e.latlng.lng);
             }
         });
 
@@ -451,7 +443,7 @@
         function addPointMarker(point, lat, lng) {
             const color = pointColors[point] || '#2196F3';
             const marker = L.marker([lat, lng], {title: `Point ${point}`}).addTo(map);
-            marker.bindPopup(`<b>Point ${point}</b>`);
+            marker.bindPopup(`<b>Point ${point}</b><br><button onclick=\"goToLatLng(${lat},${lng})\">Go to Point</button>`);
             pointMarkers[point] = marker;
             allMarkers.push(marker);
             marker.on('contextmenu', function(ev) {
@@ -510,7 +502,7 @@
                         });
                         const marker = L.marker([data.lat, data.lng], { icon: houseIcon })
                             .addTo(map)
-                            .bindPopup('Docking Station');
+                            .bindPopup('Docking Station<br><button onclick=\"goToLatLng(' + data.lat + ',' + data.lng + ')\">Go to Dock</button>');
                         allMarkers.push(marker);
                     } else {
                         console.log('No docking station set.');
@@ -639,6 +631,26 @@
             setTimeout(() => { this.disabled = false; }, 5000); // Re-enable after 5s for demo
             // Optionally, send fetch('/api/return_to_dock', {method:'POST'})
         };
+
+        // Add global goToLatLng for navigation from popups and map clicks
+        function goToLatLng(lat, lng) {
+            // Draw route line from current robot position if available
+            if (window.gpsMarker && window.gpsMarker.getLatLng) {
+                if (window.navLine) map.removeLayer(window.navLine);
+                window.navLine = L.polyline([
+                    window.gpsMarker.getLatLng(),
+                    [lat, lng]
+                ], {color: 'red', weight: 4, dashArray: '8,8'}).addTo(map);
+            }
+            fetch('/move_rover', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ lat: lat, lng: lng })
+            }).then(res => res.json()).then(data => {
+                // Optionally show a status message
+                if (window.showNavStatus) window.showNavStatus('Rover moving to: ' + lat + ', ' + lng);
+            });
+        }
     </script>
 </body>
 </html> 
