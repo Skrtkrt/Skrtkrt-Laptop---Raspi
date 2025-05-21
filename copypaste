@@ -217,7 +217,7 @@ def run_yolo_inference():
 
 def initialize_hardware():
     global _i2c, _tca, _r_en1, _l_en1, _r_en2, _l_en2, _back_sensor, _front_sensor, _adc, _temp_sensor_initialized
-    
+    print('[DEBUG] Initializing hardware...')
     if _i2c is None:
         # === Motor Enable Pins ===
         _r_en1 = OutputDevice(17)
@@ -232,9 +232,11 @@ def initialize_hardware():
 
         # === I2C Setup ===
         _i2c = busio.I2C(SCL, SDA)
+        print('[DEBUG] I2C bus initialized')
 
         # === TCA9548A Multiplexer Setup ===
         _tca = TCA9548A(_i2c)
+        print('[DEBUG] TCA9548A multiplexer initialized')
 
         # === Ultrasonic Sensors ===
         _back_sensor = DistanceSensor(echo=19, trigger=13, max_distance=4)
@@ -265,6 +267,7 @@ def select_tca_channel(channel):
 
 # === PCA9685 Setup ===
 def setup_pca9685(channel, frequency=1000):
+    print(f'[DEBUG] Setting up PCA9685 on channel {channel} with frequency {frequency}')
     if _i2c is None:
         initialize_hardware()
     select_tca_channel(channel)
@@ -274,55 +277,65 @@ def setup_pca9685(channel, frequency=1000):
 
 # === PWM Control ===
 def set_pwm(pca, channel, duty):
+    print(f'[DEBUG] set_pwm: channel={channel}, duty={duty}')
     pca.channels[channel].duty_cycle = duty
 
 def move_forward(pca, pwm):
+    print(f'[DEBUG] move_forward: pwm={pwm}')
     set_pwm(pca, 0, pwm)  # Left backward
     set_pwm(pca, 1, 0)    # Left forward off
     set_pwm(pca, 2, 0)    # Right forward off
     set_pwm(pca, 3, pwm)  # Right backward
 
 def move_backward(pca, pwm):
+    print(f'[DEBUG] move_backward: pwm={pwm}')
     set_pwm(pca, 0, 0)    # Left backward off
     set_pwm(pca, 1, pwm)  # Left forward
     set_pwm(pca, 2, pwm)  # Right forward
     set_pwm(pca, 3, 0)    # Right backward off
 
 def stop_motors(pca):
+    print('[DEBUG] stop_motors')
     for ch in range(4):
         set_pwm(pca, ch, 0)
 
 def rotate_left(pca, pwm):
+    print(f'[DEBUG] rotate_left: pwm={pwm}')
     set_pwm(pca, 0, pwm)  # Left backward
     set_pwm(pca, 1, 0)
     set_pwm(pca, 2, pwm)  # Right forward
     set_pwm(pca, 3, 0)
 
 def rotate_right(pca, pwm):
+    print(f'[DEBUG] rotate_right: pwm={pwm}')
     set_pwm(pca, 0, 0)
     set_pwm(pca, 1, pwm)  # Left forward
     set_pwm(pca, 2, 0)
     set_pwm(pca, 3, pwm)  # Right backward
 
 def move_northwest(pca, pwm):
+    print(f'[DEBUG] move_northwest: pwm={pwm}')
     set_pwm(pca, 0, int(pwm / 4))  # Left backward low
     set_pwm(pca, 1, 0)
     set_pwm(pca, 2, 0)
     set_pwm(pca, 3, pwm)           # Right backward
 
 def move_northeast(pca, pwm):
+    print(f'[DEBUG] move_northeast: pwm={pwm}')
     set_pwm(pca, 0, pwm)           # Left backward
     set_pwm(pca, 1, 0)
     set_pwm(pca, 2, 0)
     set_pwm(pca, 3, int(pwm / 4))  # Right backward low
 
 def move_southwest(pca, pwm):
+    print(f'[DEBUG] move_southwest: pwm={pwm}')
     set_pwm(pca, 0, 0)
     set_pwm(pca, 1, int(pwm / 4))  # Left forward low
     set_pwm(pca, 2, pwm)           # Right forward
     set_pwm(pca, 3, 0)
 
 def move_southeast(pca, pwm):
+    print(f'[DEBUG] move_southeast: pwm={pwm}')
     set_pwm(pca, 0, 0)
     set_pwm(pca, 1, pwm)           # Left forward
     set_pwm(pca, 2, int(pwm / 4))  # Right forward low
@@ -627,6 +640,7 @@ def move_channels_9_10_11(pca, targets):
 def perform_object_sequence(object_name):
     pca = setup_pca9685(channel=0, frequency=50)
     try:
+        print(f'[DEBUG] Starting perform_object_sequence for {object_name}')
         # Step 1: Reset all servos to rest
         move_channels_9_10_11(pca, rest_position)
         time.sleep(0.5)
@@ -643,7 +657,6 @@ def perform_object_sequence(object_name):
             return
         # Step 5: Hold
         time.sleep(2)
-
         # --- Sensor check and pump logic ---
         criteria_met = False
         recorded_data = None
@@ -651,16 +664,20 @@ def perform_object_sequence(object_name):
         while time.time() - start_time < 5:
             try:
                 water_level_raw, water_level_voltage = read_water_level()
+                print(f'[DEBUG] Water level voltage: {water_level_voltage}')
                 if water_level_voltage is None or water_level_voltage <= 0.2:
                     print("[INFO] No water detected. Skipping sensor validation and spray.")
                     break
                 # Water detected, check other sensors
                 ph_data = read_ph()
+                print(f'[DEBUG] pH data: {ph_data}')
                 turbidity = read_turbidity()
+                print(f'[DEBUG] Turbidity: {turbidity}')
                 temp_data = read_temp()
+                print(f'[DEBUG] Temp data: {temp_data}')
                 gps = get_latest_gps()
+                print(f'[DEBUG] GPS: {gps}')
                 now = datetime.datetime.now()
-
                 # Count how many requirements are met (out of 4)
                 met = 0
                 if ph_data and ph_data.get('ph') is not None and 5.26 <= ph_data['ph'] <= 8.41:
@@ -671,7 +688,7 @@ def perform_object_sequence(object_name):
                     met += 1
                 if gps and gps.get('lat') is not None and gps.get('lng') is not None:
                     met += 1
-
+                print(f'[DEBUG] Sensor requirements met: {met}/4')
                 if met >= 3:
                     criteria_met = True
                     recorded_data = {
@@ -684,29 +701,36 @@ def perform_object_sequence(object_name):
                         'date': now.strftime('%Y-%m-%d'),
                         'time': now.strftime('%H:%M:%S')
                     }
+                    print('[DEBUG] Criteria met, breaking loop')
                     break
             except Exception as e:
                 print(f"[ERROR] Sensor read: {e}")
             time.sleep(1)
-
         if criteria_met:
             try:
+                print('[DEBUG] Pump ON')
                 pump_on()
                 time.sleep(2)
+                print('[DEBUG] Pump OFF')
                 pump_off()
             except Exception as e:
                 print(f"[ERROR] Pump control: {e}")
             try:
                 from app import main
+                print('[DEBUG] Saving spray event')
                 main.save_spray_event(recorded_data)
             except Exception as e:
                 print(f"[ERROR] Saving spray event: {e}")
     finally:
+        print('[DEBUG] Arm cleanup: moving to straight')
         move_channels(pca, straight_position)
         time.sleep(0.5)
+        print('[DEBUG] Arm cleanup: moving to rest')
         move_channels_9_10_11(pca, rest_position)
         time.sleep(0.5)
+        print('[DEBUG] Arm cleanup: resetting all channels')
         reset_all_channels(pca)  # Reset all 16 channels to 0 (servos will lose holding torque)
+        print('[DEBUG] Arm cleanup: deinit PCA9685')
         pca.deinit()
 
 def init_pump_gpio():
