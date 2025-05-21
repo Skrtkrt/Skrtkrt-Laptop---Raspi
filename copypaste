@@ -10,7 +10,7 @@ import datetime
 import time
 from app import hardware
 from app.hardware import perform_object_sequence
-from compass import Compass
+from app.compass import Compass
 
 # Initialize Flask app
 app = Flask(__name__)
