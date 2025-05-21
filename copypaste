@@ -41,7 +41,7 @@ _temp_sensor_initialized = False
 # Constants for pH sensor
 PH_7_VOLTAGE = 2.50
 PH_SLOPE = -5.7
-PH_OFFSET = 22.0
+PH_OFFSET = 18.3
 
 # Constants for DO sensor
 GAIN = 1
@@ -674,7 +674,7 @@ def perform_object_sequence(object_name):
         criteria_met = False
         recorded_data = None
         start_time = time.time()
-        while time.time() - start_time < 5:
+        while time.time() - start_time < 3:
             try:
                 water_level_raw, water_level_voltage = read_water_level()
                 print(f'[DEBUG] Water level voltage: {water_level_voltage}')
