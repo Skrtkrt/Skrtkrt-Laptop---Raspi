@@ -679,36 +679,54 @@ def perform_object_sequence(object_name):
             if water_level_voltage is None or water_level_voltage <= 0.2:
                 print("[INFO] No water detected. Skipping sensor validation and spray.")
             else:
-                # Water detected, check other sensors
-                ph_data = read_ph()
-                print(f'[DEBUG] pH data: {ph_data}')
-                turbidity = read_turbidity()
-                print(f'[DEBUG] Turbidity: {turbidity}')
-                temp_data = read_temp()
-                print(f'[DEBUG] Temp data: {temp_data}')
-                gps = get_latest_gps()
-                print(f'[DEBUG] GPS: {gps}')
-                now = datetime.datetime.now()
-                # Count how many requirements are met (out of 4)
+                # Water detected, check other sensors robustly
                 met = 0
-                if ph_data and ph_data.get('ph') is not None and 5.26 <= ph_data['ph'] <= 8.41:
-                    met += 1
-                if turbidity is not None and turbidity >= 0.29:
-                    met += 1
-                if temp_data and temp_data.get('temp') is not None and 26.80 <= temp_data['temp'] <= 33.20:
-                    met += 1
-                if gps and gps.get('lat') is not None and gps.get('lng') is not None:
-                    met += 1
+                ph_val = None
+                turbidity_val = None
+                temp_val = None
+                gps_val = None
+                try:
+                    ph_data = read_ph()
+                    ph_val = ph_data['ph'] if ph_data and ph_data.get('ph') is not None else None
+                    print(f'[DEBUG] pH data: {ph_data}')
+                    if ph_val is not None and 5.26 <= ph_val <= 8.41:
+                        met += 1
+                except Exception as e:
+                    print(f"[ERROR] pH sensor read: {e}")
+                try:
+                    turbidity_val = read_turbidity()
+                    print(f'[DEBUG] Turbidity: {turbidity_val}')
+                    if turbidity_val is not None and turbidity_val >= 0.29:
+                        met += 1
+                except Exception as e:
+                    print(f"[ERROR] Turbidity sensor read: {e}")
+                try:
+                    temp_data = read_temp()
+                    temp_val = temp_data['temp'] if temp_data and temp_data.get('temp') is not None else None
+                    print(f'[DEBUG] Temp data: {temp_data}')
+                    if temp_val is not None and 26.80 <= temp_val <= 33.20:
+                        met += 1
+                except Exception as e:
+                    print(f"[ERROR] Temp sensor read: {e}")
+                try:
+                    gps = get_latest_gps()
+                    gps_val = gps if gps and gps.get('lat') is not None and gps.get('lng') is not None else None
+                    print(f'[DEBUG] GPS: {gps}')
+                    if gps_val:
+                        met += 1
+                except Exception as e:
+                    print(f"[ERROR] GPS read: {e}")
                 print(f'[DEBUG] Sensor requirements met: {met}/4')
                 if met >= 3:
                     criteria_met = True
+                    now = datetime.datetime.now()
                     recorded_data = {
                         'water_level': water_level_voltage,
-                        'ph': ph_data['ph'] if ph_data else None,
-                        'turbidity': turbidity,
-                        'temperature': temp_data['temp'] if temp_data else None,
-                        'lat': gps.get('lat'),
-                        'lng': gps.get('lng'),
+                        'ph': ph_val,
+                        'turbidity': turbidity_val,
+                        'temperature': temp_val,
+                        'lat': gps_val.get('lat') if gps_val else None,
+                        'lng': gps_val.get('lng') if gps_val else None,
                         'date': now.strftime('%Y-%m-%d'),
                         'time': now.strftime('%H:%M:%S')
                     }
