@@ -41,6 +41,7 @@ _temp_sensor_initialized = False
 # Constants for pH sensor
 PH_7_VOLTAGE = 2.50
 PH_SLOPE = -5.7
+PH_OFFSET = 22.0
 
 # Constants for DO sensor
 GAIN = 1
@@ -341,6 +342,28 @@ def move_southeast(pca, pwm):
     set_pwm(pca, 2, int(pwm / 4))  # Right forward low
     set_pwm(pca, 3, 0)
 
+# === pH Sensor Calibration ---
+def calibrate_ph_sensor():
+    """Guide the user through pH sensor calibration and print the slope and offset."""
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    input("Place the pH probe in pH 7.00 buffer solution and press Enter...")
+    with _ads_lock:
+        channel = AnalogIn(_ads, 2)
+        v7 = channel.voltage
+        print(f"[CALIBRATION] Voltage in pH 7.00 buffer: {v7:.4f} V")
+    input("Rinse the probe, place it in pH 4.00 buffer solution and press Enter...")
+    with _ads_lock:
+        channel = AnalogIn(_ads, 2)
+        v4 = channel.voltage
+        print(f"[CALIBRATION] Voltage in pH 4.00 buffer: {v4:.4f} V")
+    slope = (7.00 - 4.00) / (v7 - v4)
+    offset = 7.00 - (slope * v7)
+    print(f"[CALIBRATION] Calculated slope: {slope:.4f}")
+    print(f"[CALIBRATION] Calculated offset: {offset:.4f}")
+    print("Update PH_SLOPE and PH_OFFSET in your code with these values for accurate readings.")
+    return slope, offset
+
 # === pH Sensor ===
 def read_ph():
     from adafruit_ads1x15.analog_in import AnalogIn
@@ -348,7 +371,7 @@ def read_ph():
     with _ads_lock:
         channel = AnalogIn(_ads, 2)  # ADS.P2
         voltage = channel.voltage
-        pH_Value = (voltage - 2.5) * 3.5 + 7.0
+        pH_Value = PH_SLOPE * voltage + PH_OFFSET
         return {'ph': pH_Value, 'voltage': voltage}
 
 # === DO Sensor ===
@@ -492,16 +515,6 @@ def read_turbidity():
         else:
             turbidity = 0.29 + (voltage - MIN_VOLTAGE_TURBIDITY) * (731.00 - 0.29) / (MAX_VOLTAGE_TURBIDITY - MIN_VOLTAGE_TURBIDITY)
         return turbidity
-
-# pH Level (A2)
-def read_ph():
-    from adafruit_ads1x15.analog_in import AnalogIn
-    initialize_ads()
-    with _ads_lock:
-        channel = AnalogIn(_ads, 2)  # ADS.P2
-        voltage = channel.voltage
-        pH_Value = (voltage - 2.5) * 3.5 + 7.0
-        return {'ph': pH_Value, 'voltage': voltage}
 
 # Water Level (A3)
 def read_water_level():
