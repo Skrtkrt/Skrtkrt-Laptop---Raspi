@@ -1,0 +1,690 @@
+import time
+import busio
+from board import SCL, SDA
+from adafruit_pca9685 import PCA9685
+from gpiozero import OutputDevice, DistanceSensor
+import board
+from adafruit_tca9548a import TCA9548A
+import adafruit_ads1x15.ads1115 as ADS
+from adafruit_ads1x15.analog_in import AnalogIn
+import Adafruit_ADS1x15  # For DO sensor
+import glob
+import os
+import serial  # For UART GPS
+import threading
+import queue
+import datetime
+import lgpio
+try:
+    from picamera import PiCamera
+except (ImportError, OSError):
+    PiCamera = None
+
+# For YOLOv8 (assume ultralytics is installed)
+try:
+    from ultralytics import YOLO
+except ImportError:
+    YOLO = None
+
+# Global variables for hardware instances
+_i2c = None
+_tca = None
+_r_en1 = None
+_l_en1 = None
+_r_en2 = None
+_l_en2 = None
+_back_sensor = None
+_front_sensor = None
+_adc = None
+_temp_sensor_initialized = False
+
+# Constants for pH sensor
+PH_7_VOLTAGE = 2.50
+PH_SLOPE = -5.7
+
+# Constants for DO sensor
+GAIN = 1
+VREF = 5000
+ADC_RES = 32767
+CAL1_V = 131
+CAL1_T = 25
+DO_Table = [
+    14460, 14220, 13820, 13440, 13090, 12740, 12420, 12110, 11810, 11530,
+    11260, 11010, 10770, 10530, 10300, 10080, 9860, 9660, 9460, 9270,
+    9080, 8900, 8730, 8570, 8410, 8250, 8110, 7960, 7820, 7690,
+    7560, 7430, 7300, 7180, 7070, 6950, 6840, 6730, 6630, 6530, 6410
+]
+READ_TEMP = 25
+
+# --- GPS Integration ---
+_gps_serial = None
+_gps_queue = queue.Queue()
+_gps_thread = None
+_gps_latest = None
+_latest_gps = None
+
+# Shared hardware resources
+_ads = None
+_ads_lock = threading.Lock()
+
+_temp_sensor_lock = threading.Lock()
+
+RELAY_PIN = 26
+_pump_gpio_handle = None
+
+def _gps_reader():
+    """Background thread to read GPS data from ESP32"""
+    global _latest_gps
+    current_data = {}
+    
+    while True:
+        try:
+            ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=1)
+            # print("[INFO] Connected to ESP32 GPS")
+            
+            while True:
+                try:
+                    line = ser.readline().decode('utf-8').strip()
+                    if line:
+                        # print(f"[DEBUG] ESP32 says: {line}")
+                        if line.startswith("Latitude:"):
+                            try:
+                                lat = float(line.split("Latitude:")[1].strip())
+                                current_data['lat'] = lat
+                            except ValueError as e:
+                                # print(f"[ERROR] Failed to parse latitude: {e}")
+                                pass
+                        elif line.startswith("Longitude:"):
+                            try:
+                                lng = float(line.split("Longitude:")[1].strip())
+                                current_data['lng'] = lng
+                            except ValueError as e:
+                                # print(f"[ERROR] Failed to parse longitude: {e}")
+                                pass
+                        elif line.startswith("Date:"):
+                            current_data['date'] = line.split("Date:")[1].strip()
+                        elif line.startswith("Time:"):
+                            current_data['time'] = line.split("Time:")[1].strip()
+                        elif line.startswith("-----------------------"):
+                            if 'lat' in current_data and 'lng' in current_data:
+                                if 4.6431 <= current_data['lat'] <= 21.1205 and 116.9549 <= current_data['lng'] <= 126.5995:
+                                    _latest_gps = {
+                                        'lat': current_data['lat'],
+                                        'lng': current_data['lng'],
+                                        'date': current_data.get('date'),
+                                        'time': current_data.get('time'),
+                                        'raw': f"Lat: {current_data['lat']}, Lng: {current_data['lng']}, Date: {current_data.get('date')}, Time: {current_data.get('time')}",
+                                        'timestamp': datetime.datetime.now().isoformat()
+                                    }
+                                    # print(f"[INFO] GPS Update - Lat: {current_data['lat']}, Lng: {current_data['lng']}, Date: {current_data.get('date')}, Time: {current_data.get('time')}")
+                                else:
+                                    # print(f"[WARNING] GPS coordinates outside Philippines bounds: {current_data['lat']}, {current_data['lng']}")
+                                    pass
+                            current_data = {}
+                except serial.SerialException as e:
+                    # print(f"[ERROR] GPS Serial read error: {e}")
+                    break
+        except serial.SerialException as e:
+            # print(f"[ERROR] GPS Serial connection failed: {e}")
+            time.sleep(5)
+        except Exception as e:
+            # print(f"[ERROR] GPS Thread error: {e}")
+            time.sleep(5)
+        finally:
+            try:
+                ser.close()
+            except:
+                pass
+
+def start_gps_thread():
+    global _gps_thread
+    if _gps_thread is None or not _gps_thread.is_alive():
+        _gps_thread = threading.Thread(target=_gps_reader, daemon=True)
+        _gps_thread.start()
+
+def parse_nmea(nmea):
+    # Minimal NMEA parser for GPRMC or GPGGA
+    try:
+        parts = nmea.split(',')
+        if nmea.startswith('$GPRMC') and parts[3] and parts[5]:
+            lat = float(parts[3][:2]) + float(parts[3][2:])/60.0
+            if parts[4] == 'S': lat = -lat
+            lng = float(parts[5][:3]) + float(parts[5][3:])/60.0
+            if parts[6] == 'W': lng = -lng
+            return {'lat': lat, 'lng': lng, 'raw': nmea}
+        elif nmea.startswith('$GPGGA') and parts[2] and parts[4]:
+            lat = float(parts[2][:2]) + float(parts[2][2:])/60.0
+            if parts[3] == 'S': lat = -lat
+            lng = float(parts[4][:3]) + float(parts[4][3:])/60.0
+            if parts[5] == 'W': lng = -lng
+            return {'lat': lat, 'lng': lng, 'raw': nmea}
+    except Exception:
+        pass
+    return {'lat': None, 'lng': None, 'raw': nmea}
+
+def get_latest_gps():
+    start_gps_thread()
+    global _latest_gps
+    if _latest_gps:
+        return _latest_gps
+    return {'lat': None, 'lng': None, 'date': None, 'time': None, 'raw': None}
+
+# === Ultrasonic Sensor Readings ===
+def get_ultrasonic():
+    initialize_hardware()
+    try:
+        front = _front_sensor.distance if _front_sensor else None
+        back = _back_sensor.distance if _back_sensor else None
+        return {'front': front, 'back': back}
+    except Exception as e:
+        return {'front': None, 'back': None, 'error': str(e)}
+
+# === Camera + YOLOv8 Object Detection ===
+_yolo_model = None
+_camera = None
+
+def get_camera():
+    global _camera
+    if PiCamera is None:
+        print("[INFO] PiCamera not available on this system.")
+        return None
+    if _camera is None:
+        _camera = PiCamera()
+    return _camera
+
+def run_yolo_inference():
+    global _yolo_model
+    if YOLO is None:
+        return {'error': 'YOLOv8 not installed'}
+    cam = get_camera()
+    if cam is None:
+        return {'error': 'PiCamera not available'}
+    if _yolo_model is None:
+        _yolo_model = YOLO('yolov8n.pt')  # Use nano model for speed
+    # Capture image to a temporary file
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix='.jpg') as tmp:
+        cam.capture(tmp.name)
+        results = _yolo_model(tmp.name)
+        # Return detected objects (labels and confidences)
+        objects = []
+        for r in results:
+            for box in r.boxes:
+                cls = int(box.cls[0])
+                conf = float(box.conf[0])
+                objects.append({'class': cls, 'confidence': conf})
+        return {'objects': objects}
+
+def initialize_hardware():
+    global _i2c, _tca, _r_en1, _l_en1, _r_en2, _l_en2, _back_sensor, _front_sensor, _adc, _temp_sensor_initialized
+    
+    if _i2c is None:
+        # === Motor Enable Pins ===
+        _r_en1 = OutputDevice(17)
+        _l_en1 = OutputDevice(27)
+        _r_en2 = OutputDevice(23)
+        _l_en2 = OutputDevice(24)
+
+        _r_en1.on()
+        _l_en1.on()
+        _r_en2.on()
+        _l_en2.on()
+
+        # === I2C Setup ===
+        _i2c = busio.I2C(SCL, SDA)
+
+        # === TCA9548A Multiplexer Setup ===
+        _tca = TCA9548A(_i2c)
+
+        # === Ultrasonic Sensors ===
+        _back_sensor = DistanceSensor(echo=19, trigger=13, max_distance=4)
+        _front_sensor = DistanceSensor(echo=6, trigger=5, max_distance=4)
+
+        # === DO Sensor Setup ===
+        try:
+            _adc = Adafruit_ADS1x15.ADS1115(busnum=1)
+        except Exception as e:
+            print(f"[WARN] DO sensor not available: {e}")
+            _adc = None
+
+        # === Temperature Sensor Setup ===
+        try:
+            if not _temp_sensor_initialized:
+                # Check if modules are already loaded
+                if not os.path.exists('/sys/bus/w1/devices'):
+                    print("[INFO] Temperature sensor modules not loaded, using default temperature")
+                else:
+                    _temp_sensor_initialized = True
+        except Exception as e:
+            print(f"[WARN] Temperature sensor setup error: {e}")
+
+def select_tca_channel(channel):
+    if _i2c is None:
+        initialize_hardware()
+    _i2c.writeto(0x70, bytes([1 << channel]))
+
+# === PCA9685 Setup ===
+def setup_pca9685(channel, frequency=1000):
+    if _i2c is None:
+        initialize_hardware()
+    select_tca_channel(channel)
+    pca = PCA9685(_i2c)
+    pca.frequency = frequency
+    return pca
+
+# === PWM Control ===
+def set_pwm(pca, channel, duty):
+    pca.channels[channel].duty_cycle = duty
+
+def move_forward(pca, pwm):
+    set_pwm(pca, 0, pwm)  # Left backward
+    set_pwm(pca, 1, 0)    # Left forward off
+    set_pwm(pca, 2, 0)    # Right forward off
+    set_pwm(pca, 3, pwm)  # Right backward
+
+def move_backward(pca, pwm):
+    set_pwm(pca, 0, 0)    # Left backward off
+    set_pwm(pca, 1, pwm)  # Left forward
+    set_pwm(pca, 2, pwm)  # Right forward
+    set_pwm(pca, 3, 0)    # Right backward off
+
+def stop_motors(pca):
+    for ch in range(4):
+        set_pwm(pca, ch, 0)
+
+def rotate_left(pca, pwm):
+    set_pwm(pca, 0, pwm)  # Left backward
+    set_pwm(pca, 1, 0)
+    set_pwm(pca, 2, pwm)  # Right forward
+    set_pwm(pca, 3, 0)
+
+def rotate_right(pca, pwm):
+    set_pwm(pca, 0, 0)
+    set_pwm(pca, 1, pwm)  # Left forward
+    set_pwm(pca, 2, 0)
+    set_pwm(pca, 3, pwm)  # Right backward
+
+def move_northwest(pca, pwm):
+    set_pwm(pca, 0, int(pwm / 4))  # Left backward low
+    set_pwm(pca, 1, 0)
+    set_pwm(pca, 2, 0)
+    set_pwm(pca, 3, pwm)           # Right backward
+
+def move_northeast(pca, pwm):
+    set_pwm(pca, 0, pwm)           # Left backward
+    set_pwm(pca, 1, 0)
+    set_pwm(pca, 2, 0)
+    set_pwm(pca, 3, int(pwm / 4))  # Right backward low
+
+def move_southwest(pca, pwm):
+    set_pwm(pca, 0, 0)
+    set_pwm(pca, 1, int(pwm / 4))  # Left forward low
+    set_pwm(pca, 2, pwm)           # Right forward
+    set_pwm(pca, 3, 0)
+
+def move_southeast(pca, pwm):
+    set_pwm(pca, 0, 0)
+    set_pwm(pca, 1, pwm)           # Left forward
+    set_pwm(pca, 2, int(pwm / 4))  # Right forward low
+    set_pwm(pca, 3, 0)
+
+# === pH Sensor ===
+def read_ph():
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    with _ads_lock:
+        channel = AnalogIn(_ads, 2)  # ADS.P2
+        voltage = channel.voltage
+        pH_Value = (voltage - 2.5) * 3.5 + 7.0
+        return {'ph': pH_Value, 'voltage': voltage}
+
+# === DO Sensor ===
+def read_do(offset=0):
+    import smbus
+    import Adafruit_ADS1x15
+    TCA_ADDRESS = 0x70
+    TCA_CHANNEL = 1
+    ADS_CHANNEL = 1  # A1/P1
+    GAIN = 1
+    VREF = 5000
+    ADC_RES = 32767
+
+    # Calibration range (example values)
+    MIN_VOLTAGE_DO = 400  # mV at 0.5%
+    MAX_VOLTAGE_DO = 2000  # mV at 2.6%
+
+    try:
+        i2c_bus = smbus.SMBus(1)
+        adc = Adafruit_ADS1x15.ADS1115(busnum=1)
+
+        # Re-select TCA channel 1 before each read
+        i2c_bus.write_byte(TCA_ADDRESS, 1 << TCA_CHANNEL)
+
+        raw = adc.read_adc(ADS_CHANNEL, gain=GAIN)
+        voltage = (raw / ADC_RES) * VREF  # Convert to millivolts
+
+        # Map voltage to % DO
+        if voltage < MIN_VOLTAGE_DO:
+            do_percent = 0.5
+        elif voltage > MAX_VOLTAGE_DO:
+            do_percent = 2.6
+        else:
+            do_percent = 0.5 + (voltage - MIN_VOLTAGE_DO) * (2.6 - 0.5) / (MAX_VOLTAGE_DO - MIN_VOLTAGE_DO)
+        do_percent += offset
+
+        print(f"[DEBUG] DO P1 -> Raw ADC: {raw} | Voltage: {voltage:.2f} mV | DO: {do_percent:.2f}%")
+        return {'do': do_percent, 'voltage': voltage, 'raw': raw}
+    except OSError as e:
+        print("[ERROR] I2C communication error. Check wiring and channel selection.")
+        print(e)
+        return {'do': None, 'voltage': None, 'error': str(e)}
+    except Exception as e:
+        print(f"[WARN] DO sensor error: {e}")
+        return {'do': None, 'voltage': None, 'error': str(e)}
+
+# === Turbidity Sensor ===
+latest_turbidity = None
+
+def read_turbidity():
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    with _ads_lock:
+        channel = AnalogIn(_ads, 0)  # ADS.P0
+        voltage = channel.voltage * 1000  # Convert V to mV
+        # Calibration range (example)
+        MIN_VOLTAGE_TURBIDITY = 300   # mV → 0.29 NTU
+        MAX_VOLTAGE_TURBIDITY = 4300  # mV → 731.00 NTU
+        if voltage < MIN_VOLTAGE_TURBIDITY:
+            turbidity = 0.29
+        elif voltage > MAX_VOLTAGE_TURBIDITY:
+            turbidity = 731.00
+        else:
+            turbidity = 0.29 + (voltage - MIN_VOLTAGE_TURBIDITY) * (731.00 - 0.29) / (MAX_VOLTAGE_TURBIDITY - MIN_VOLTAGE_TURBIDITY)
+        return {'ntu': round(turbidity, 2), 'voltage': voltage}
+
+def turbidity_reader():
+    global latest_turbidity
+    while True:
+        try:
+            result = read_turbidity()
+            latest_turbidity = result['ntu']
+            print(f"[DEBUG] Turbidity Voltage: {result['voltage']:.2f} mV | NTU: {latest_turbidity}")
+        except Exception as e:
+            latest_turbidity = None
+            print(f"Error reading turbidity: {str(e)}")
+        import time; time.sleep(1)
+
+def start_turbidity_thread():
+    if not hasattr(start_turbidity_thread, "started"):
+        threading.Thread(target=turbidity_reader, daemon=True).start()
+        start_turbidity_thread.started = True
+
+def get_latest_turbidity():
+    start_turbidity_thread()
+    return latest_turbidity
+
+# === Temperature Sensor ===
+def read_temp():
+    try:
+        with _temp_sensor_lock:
+            device_folders = glob.glob('/sys/bus/w1/devices/28*')
+            if not device_folders:
+                return {'temp': None, 'error': 'No sensor found'}
+            device_file = device_folders[0] + '/w1_slave'
+            with open(device_file, 'r') as f:
+                lines = f.readlines()
+            if len(lines) < 2 or 'YES' not in lines[0]:
+                return {'temp': None, 'error': 'Invalid sensor response'}
+            temp_output = lines[1].find('t=')
+            if temp_output == -1:
+                return {'temp': None, 'error': 'Temperature data not found'}
+            temp_string = lines[1][temp_output+2:]
+            temp_c = float(temp_string) / 1000.0
+            if -55 <= temp_c <= 125:
+                return {'temp': temp_c}
+            else:
+                return {'temp': None, 'error': 'Temperature out of valid range'}
+    except Exception as e:
+        return {'temp': None, 'error': str(e)}
+
+# === Cleanup Function ===
+def cleanup(pca):
+    stop_motors(pca)
+    pca.deinit()
+    if _r_en1: _r_en1.off()
+    if _l_en1: _l_en1.off()
+    if _r_en2: _r_en2.off()
+    if _l_en2: _l_en2.off()
+
+# Initialize I2C, TCA9548A, and ADS1115 only once
+def initialize_ads():
+    global _i2c, _tca, _ads
+    if _i2c is None or _tca is None or _ads is None:
+        import board, busio
+        import adafruit_ads1x15.ads1115 as ADS
+        from adafruit_tca9548a import TCA9548A
+        _i2c = busio.I2C(board.SCL, board.SDA)
+        _tca = TCA9548A(_i2c)
+        ads_i2c = _tca[1]
+        _ads = ADS.ADS1115(ads_i2c)
+
+# Helper to select multiplexer channel
+def select_ads_channel(channel):
+    initialize_ads()
+    with _ads_lock:
+        # Select channel 1 on the TCA9548A (where ADS1115 is connected)
+        ads_i2c = _tca[1]
+        # Re-initialize ADS1115 for each read to ensure correct channel
+        from adafruit_ads1x15 import ads1115 as ADS
+        _ads = ADS.ADS1115(ads_i2c)
+        from adafruit_ads1x15.analog_in import AnalogIn
+        return AnalogIn(_ads, channel)
+
+# Water Level (A3)
+def read_water_level():
+    from adafruit_ads1x15.analog_in import AnalogIn
+    initialize_ads()
+    with _ads_lock:
+        channel = AnalogIn(_ads, 3)  # ADS.P3
+        voltage = channel.voltage
+        return channel.value, voltage
+
+# === Servo Arm Control ===
+servo_config = {
+    9: {"min": 20, "max": 70, "init": 70, "delay": 0.03, "rest": 0},
+    10: {"min": 0, "max": 100, "init": 100, "delay": 0.08, "rest": 0},
+    11: {"min": 0, "max": 180, "init": 0, "delay": 0.1, "rest": 160},
+}
+
+def angle_to_pwm(angle):
+    pulse_length_us = 500 + (angle / 180) * 2000
+    duty_cycle = int((pulse_length_us / 20000) * 65535)
+    return duty_cycle
+
+def set_servo_angle(pca, channel, angle):
+    cfg = servo_config[channel]
+    clamped = max(cfg["min"], min(angle, cfg["max"]))
+    pca.channels[channel].duty_cycle = angle_to_pwm(clamped)
+    return clamped
+
+# Track current angles for all channels
+current_angles = {9: servo_config[9]["init"], 10: servo_config[10]["init"], 11: servo_config[11]["init"]}
+
+def smooth_move(pca, channel, target, delay):
+    global current_angles
+    current = current_angles[channel]
+    step = 1 if target > current else -1
+    for angle in range(current, target + step, step):
+        set_servo_angle(pca, channel, angle)
+        time.sleep(delay)
+    current_angles[channel] = target
+    return target
+
+def move_channels(pca, targets):
+    threads = []
+    for ch in targets:
+        t = threading.Thread(target=smooth_move, args=(pca, ch, targets[ch], servo_config[ch]["delay"]))
+        threads.append(t)
+        t.start()
+    for t in threads:
+        t.join()
+
+def reset_all_channels(pca):
+    for ch in range(16):
+        pca.channels[ch].duty_cycle = 0
+
+# === Utility Patterns for Servo and DC Motor Control ===
+def reset_all_servos(pca):
+    """Set all servo channels to their initial position (from servo_config)."""
+    for channel, cfg in servo_config.items():
+        set_servo_angle(pca, channel, cfg["init"])
+
+def set_servo_freq(pca, freq):
+    """Set the PWM frequency for the servo controller."""
+    pca.frequency = freq
+
+def move_servo(pca, channel, angle):
+    """Move a servo to a specific angle."""
+    return set_servo_angle(pca, channel, angle)
+
+def servo_go_back_init(pca, channel):
+    """Move a servo back to its initial position."""
+    cfg = servo_config[channel]
+    return set_servo_angle(pca, channel, cfg["init"])
+
+# --- DC Motor Patterns ---
+def reset_all_motors(pca):
+    """Stop all DC motors."""
+    stop_motors(pca)
+
+def set_motor_freq(pca, freq):
+    """Set the PWM frequency for the DC motor controller."""
+    pca.frequency = freq
+
+def move_dc_motor(pca, direction, pwm):
+    """Move the DC motor in a direction with a given PWM value.
+    direction: 'forward', 'backward', 'left', 'right', 'nw', 'ne', 'sw', 'se'
+    """
+    if direction == 'forward':
+        move_forward(pca, pwm)
+    elif direction == 'backward':
+        move_backward(pca, pwm)
+    elif direction == 'left':
+        rotate_left(pca, pwm)
+    elif direction == 'right':
+        rotate_right(pca, pwm)
+    elif direction == 'nw':
+        move_northwest(pca, pwm)
+    elif direction == 'ne':
+        move_northeast(pca, pwm)
+    elif direction == 'sw':
+        move_southwest(pca, pwm)
+    elif direction == 'se':
+        move_southeast(pca, pwm)
+    else:
+        stop_motors(pca)
+
+# Object positions for each object
+object_positions = {
+    "plant_pots": {9: 60, 10: 45, 11: 10},
+    "bamboo_stump": {9: 30, 10: 75, 11: 10},
+    "tires": {9: 60, 10: 45, 11: 10},
+    "bamboo_planter": {9: 30, 10: 75, 11: 10}
+}
+
+straight_position = {9: 70, 10: 0, 11: 0}  # Adjust as needed
+init_position = {ch: servo_config[ch]["init"] for ch in servo_config}
+rest_position = {ch: servo_config[ch]["rest"] for ch in servo_config}
+
+def move_channels_11_then_10(pca, targets):
+    # Move channel 11 first, if present
+    if 11 in targets:
+        smooth_move(pca, 11, targets[11], servo_config[11]["delay"])
+    # Then move other channels (excluding 11)
+    for ch in targets:
+        if ch != 11:
+            smooth_move(pca, ch, targets[ch], servo_config[ch]["delay"])
+
+def move_channels_9_10_11(pca, targets):
+    # Move channel 9 first, then 10, then 11 (sequentially, not in threads)
+    if 9 in targets:
+        print("[Servo Rest] Moving channel 9 to", targets[9])
+        smooth_move(pca, 9, targets[9], servo_config[9]["delay"])
+    if 10 in targets:
+        print("[Servo Rest] Moving channel 10 to", targets[10])
+        smooth_move(pca, 10, targets[10], servo_config[10]["delay"])
+    if 11 in targets:
+        print("[Servo Rest] Moving channel 11 to", targets[11])
+        smooth_move(pca, 11, targets[11], servo_config[11]["delay"])
+
+def perform_object_sequence(object_name):
+    pca = setup_pca9685(channel=0, frequency=50)
+    # Step 1: Reset all servos to rest
+    move_channels_9_10_11(pca, init_position)
+    time.sleep(0.5)
+    # Step 2: Set frequency (already set above)
+    set_servo_freq(pca, 50)
+    # Step 3: Move to straight position
+    move_channels(pca, straight_position)
+    time.sleep(0.5)
+    # Step 4: Move to object position
+    if object_name in object_positions:
+        move_channels_11_then_10(pca, object_positions[object_name])
+    else:
+        print(f"Unknown object: {object_name}")
+        pca.deinit()
+        return
+    # Step 5: Hold
+    time.sleep(2)
+    # Step 6: Return to straight
+    move_channels(pca, straight_position)
+    time.sleep(0.5)
+    # Step 7: Return to rest
+    move_channels_9_10_11(pca, rest_position)
+    time.sleep(0.5)
+    reset_all_channels(pca)  # Reset all 16 channels to 0 (servos will lose holding torque)
+    pca.deinit()
+
+def init_pump_gpio():
+    global _pump_gpio_handle
+    if _pump_gpio_handle is None:
+        _pump_gpio_handle = lgpio.gpiochip_open(0)
+        lgpio.gpio_claim_output(_pump_gpio_handle, RELAY_PIN)
+        lgpio.gpio_write(_pump_gpio_handle, RELAY_PIN, 1)  # Ensure OFF
+
+def pump_on():
+    init_pump_gpio()
+    lgpio.gpio_write(_pump_gpio_handle, RELAY_PIN, 0)
+    print("Water pump is ON")
+
+def pump_off():
+    init_pump_gpio()
+    lgpio.gpio_write(_pump_gpio_handle, RELAY_PIN, 1)
+    print("Water pump is OFF")
+
+def run_circle_pattern(center_lat, center_lng, radius, stop_event):
+    """
+    Moves the rover in a circle of the given radius (meters) centered at (center_lat, center_lng).
+    Uses existing move_forward, rotate_left, rotate_right, stop_motors, etc.
+    Checks stop_event.is_set() to allow stopping.
+    """
+    import math
+    from app import hardware
+    pca = setup_pca9685(channel=0)
+    # Circle: break into N segments
+    N = 36  # 10 degrees per segment
+    segment_length = 2 * math.pi * radius / N
+    forward_pwm = 30000  # Adjust as needed for your speed
+    turn_pwm = 20000     # Adjust as needed for your turning
+    for i in range(N):
+        if stop_event.is_set():
+            break
+        move_forward(pca, forward_pwm)
+        time.sleep(segment_length / 0.1)  # 0.1 m/s speed, adjust as needed
+        stop_motors(pca)
+        time.sleep(0.2)
+        rotate_left(pca, turn_pwm)
+        time.sleep(0.25)  # Adjust for 10 degree turn
+        stop_motors(pca)
+        time.sleep(0.2)
+    stop_motors(pca) 

@@ -1,0 +1,307 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Notifications - Larva Tracker</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            background: white;
+        }
+
+        /* Header and Logo Animation Styles */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 40px;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: white;
+            z-index: 100;
+        }
+
+        .logo {
+            width: 80px;
+            height: auto;
+            cursor: pointer;
+            transition: transform 0.3s ease;
+            animation: logoSway 2s infinite ease-in-out;
+        }
+
+        .logo:hover {
+            animation: logoWiggle 0.5s infinite;
+        }
+
+        @keyframes logoSway {
+            0% { transform: rotate(-5deg); }
+            50% { transform: rotate(5deg); }
+            100% { transform: rotate(-5deg); }
+        }
+
+        @keyframes logoWiggle {
+            0% { transform: rotate(-8deg); }
+            25% { transform: rotate(8deg); }
+            50% { transform: rotate(-8deg); }
+            75% { transform: rotate(8deg); }
+            100% { transform: rotate(-8deg); }
+        }
+
+        /* Navigation Styles */
+        .nav-menu {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .nav-menu a {
+            text-decoration: none;
+            color: #666;
+            font-size: 18px;
+            transition: color 0.3s ease;
+        }
+
+        .nav-menu a.active {
+            color: black;
+            font-weight: bold;
+        }
+
+        .nav-menu span {
+            color: #666;
+        }
+
+        /* Notifications Content Styles */
+        .notifications-container {
+            padding: 100px 40px 80px;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
+        .notification-card {
+            background-color: #BFBFBF;
+            padding: 20px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            position: relative;
+        }
+
+        .notification-title {
+            font-size: 20px;
+            margin-bottom: 10px;
+        }
+
+        .notification-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .detail-column {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .detail-item {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .detail-label {
+            font-weight: bold;
+        }
+
+        .detail-value {
+            color: #666;
+            font-style: italic;
+        }
+
+        .delete-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: #ff4d4d;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            padding: 5px 10px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .delete-btn:hover {
+            background: #d11a2a;
+        }
+
+        /* Footer Styles */
+        .footer {
+            background-color: #BFBFBF;
+            padding: 20px;
+            display: flex;
+            gap: 40px;
+            align-items: center;
+            justify-content: flex-start;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+        }
+
+        .battery-indicator {
+            width: 50px;
+            height: 25px;
+            background-color: #00FF00;
+            border: 2px solid #333;
+            border-radius: 3px;
+            position: relative;
+        }
+
+        .battery-indicator::after {
+            content: '';
+            position: absolute;
+            right: -6px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 4px;
+            height: 10px;
+            background-color: #333;
+            border-radius: 0 2px 2px 0;
+        }
+
+        .water-tank {
+            width: 30px;
+            height: 40px;
+            border: 2px solid #333;
+            border-radius: 5px;
+            background-color: #00FF00;
+            position: relative;
+            display: flex;
+            align-items: flex-end;
+        }
+
+        .water-tank::before {
+            content: '';
+            position: absolute;
+            top: -8px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 16px;
+            height: 8px;
+            background-color: #333;
+            border-radius: 3px 3px 0 0;
+        }
+
+        @media (max-width: 768px) {
+            .header {
+                flex-direction: column;
+                gap: 20px;
+                padding: 20px;
+            }
+
+            .nav-menu {
+                flex-wrap: wrap;
+                justify-content: center;
+            }
+
+            .notifications-container {
+                padding: 20px;
+            }
+
+            .notification-content {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <img src="{{ url_for('static', filename='images/larva logo.png') }}" alt="Logo" class="logo" onclick="window.location.href='/maps'">
+        <nav class="nav-menu">
+            <a href="/main">HOME</a>
+            <span>|</span>
+            <a href="/maps">MAPS</a>
+            <span>|</span>
+            <a href="/schedules">SCHEDULES</a>
+            <span>|</span>
+            <a href="/notifications" class="active">NOTIFICATIONS</a>
+            <span>|</span>
+            <a href="/error-logs">ERROR LOGS</a>
+        </nav>
+    </div>
+
+    <div class="notifications-container" id="notificationsContainer">
+        <!-- Cards will be injected here -->
+    </div>
+
+    <script>
+    function fetchHistory() {
+        fetch('/api/sample_history')
+            .then(res => res.json())
+            .then(data => {
+                const container = document.getElementById('notificationsContainer');
+                container.innerHTML = '';
+                if (data.length === 0) {
+                    container.innerHTML = '<div style="text-align:center;color:#888;">No breeding site history found.</div>';
+                    return;
+                }
+                data.forEach((item, idx) => {
+                    const card = document.createElement('div');
+                    card.className = 'notification-card';
+                    card.innerHTML = `
+                        <div class="notification-title">Breeding Site Detected</div>
+                        <button class="delete-btn" onclick="deleteHistory(${item.id}, this)">Delete</button>
+                        <div class="notification-content">
+                            <div class="detail-column">
+                                <div class="detail-item"><span class="detail-label">Timestamp:</span><span class="detail-value">${item.timestamp || ''}</span></div>
+                                <div class="detail-item"><span class="detail-label">Point:</span><span class="detail-value">${item.point || ''}</span></div>
+                                <div class="detail-item"><span class="detail-label">GPS:</span><span class="detail-value">${item.lat?.toFixed(6) || ''}, ${item.lng?.toFixed(6) || ''}</span></div>
+                            </div>
+                            <div class="detail-column">
+                                <div class="detail-item"><span class="detail-label">pH:</span><span class="detail-value">${item.ph?.toFixed(2) || ''}</span></div>
+                                <div class="detail-item"><span class="detail-label">DO:</span><span class="detail-value">${item.do?.toFixed(2) || ''}</span></div>
+                                <div class="detail-item"><span class="detail-label">Turbidity:</span><span class="detail-value">${item.turbidity?.toFixed(2) || ''}</span></div>
+                                <div class="detail-item"><span class="detail-label">Temperature:</span><span class="detail-value">${item.temp?.toFixed(2) || ''}</span></div>
+                                <div class="detail-item"><span class="detail-label">Water Level:</span><span class="detail-value">${item.water_level?.toFixed(2) || ''}</span></div>
+                            </div>
+                        </div>
+                    `;
+                    container.appendChild(card);
+                });
+            });
+    }
+    function deleteHistory(id, btn) {
+        if (!confirm('Delete this breeding site record?')) return;
+        fetch(`/api/sample_history/delete/${id}`, {method: 'POST'})
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    btn.closest('.notification-card').remove();
+                } else {
+                    alert('Failed to delete: ' + (data.message || 'Unknown error'));
+                }
+            });
+    }
+    // On load
+    fetchHistory();
+    </script>
+</body>
+</html>
+{% endblock %} 
